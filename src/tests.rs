@@ -76,6 +76,73 @@ fn dense_solve(b: &Dense, rhs: &[f64]) -> Option<Vec<f64>> {
     Some(x)
 }
 
+/// `B⁻¹` by Gauss–Jordan elimination with partial pivoting (`None` if a
+/// pivot is below `1e-12 · max |b_ij|`).
+fn dense_inverse(b: &Dense) -> Option<Dense> {
+    let m = b.len();
+    let mut a: Dense = b.clone();
+    let mut inv: Dense = (0..m)
+        .map(|i| (0..m).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+        .collect();
+    let scale = a
+        .iter()
+        .flatten()
+        .fold(0.0_f64, |g, v| g.max(v.abs()))
+        .max(1.0);
+    for k in 0..m {
+        let piv = (k..m).max_by(|&i, &j| a[i][k].abs().total_cmp(&a[j][k].abs()))?;
+        if le(a[piv][k].abs(), 1e-12 * scale, 0.0) {
+            return None;
+        }
+        a.swap(k, piv);
+        inv.swap(k, piv);
+        let d = a[k][k];
+        for j in 0..m {
+            a[k][j] /= d;
+            inv[k][j] /= d;
+        }
+        let (row_a, row_i) = (a[k].clone(), inv[k].clone());
+        for i in (0..m).filter(|&i| i != k) {
+            let f = a[i][k];
+            if is_exact_zero(f) {
+                continue;
+            }
+            for j in 0..m {
+                a[i][j] -= f * row_a[j];
+                inv[i][j] -= f * row_i[j];
+            }
+        }
+    }
+    Some(inv)
+}
+
+/// Skeel's condition numbers of `B` for the solves with `B` and with `Bᵀ`:
+/// `max(‖ |B⁻¹| |B| ‖∞, ‖ |B| |B⁻¹| ‖₁)`, the factor by which a
+/// perturbation of the rounding order of the same elimination can move
+/// the solution, relative to `m ε` (Higham 2002, §7.2 and Thm. 8.5).
+fn skeel_condition(b: &Dense) -> f64 {
+    let m = b.len();
+    let Some(inv) = dense_inverse(b) else {
+        return f64::INFINITY;
+    };
+    let abs = |d: &Dense| -> Dense {
+        d.iter()
+            .map(|r| r.iter().map(|v| v.abs()).collect())
+            .collect()
+    };
+    let (ai, ab) = (abs(&inv), abs(b));
+    let left = mat_mul(&ai, &ab); // |B⁻¹| |B|: rows for the ∞-norm
+    let right = mat_mul(&ab, &ai); // |B| |B⁻¹|: columns for the 1-norm
+    let norm_inf = left
+        .iter()
+        .map(|r| r.iter().sum::<f64>())
+        .fold(0.0, f64::max);
+    let norm_one = (0..m)
+        .map(|j| (0..m).map(|i| right[i][j]).sum::<f64>())
+        .fold(0.0, f64::max);
+    norm_inf.max(norm_one).max(1.0)
+}
+
 /// Number of proptest cases: `default`, or `PROPTEST_CASES` when set (for
 /// long stress runs).
 fn cases(default: u32) -> u32 {
@@ -924,7 +991,11 @@ proptest! {
     /// hypersparse FTRAN and BTRAN (Algorithms HF, HB) agree with the dense
     /// ones (Algorithms F, B) within `1e-12` relative (times `growth/100`
     /// when the growth factor exceeds 100, and times 10 on the 70%-dense
-    /// bases), for right-hand sides
+    /// bases) or, when that fixed tolerance is exceeded, within the
+    /// first-order bound `2 m ε κ(B)` of a reordering of the same roundings
+    /// (`κ` Skeel's condition number of the current basis; D-0087
+    /// pendency (i): `m = 56`, `κ ≈ 1.2·10⁴`, error `1.2·10⁻¹²`), for
+    /// right-hand sides
     /// of every density; the result is in sparse mode with a pattern that
     /// covers its support. The updates themselves record their spike with
     /// a randomly chosen algorithm, and the updated factor still agrees
@@ -955,8 +1026,18 @@ proptest! {
                 for transposed in [false, true] {
                     let xh = solve_in(&mut f, &v, true, transposed);
                     let xd = solve_in(&mut f, &v, false, transposed);
-                    prop_assert!(rel_err(&xh, &xd) <= tol_eq,
-                        "transposed {transposed}, nnz {nnz}: error {}", rel_err(&xh, &xd));
+                    let err = rel_err(&xh, &xd);
+                    // Above the fixed tolerance, the bound that follows the
+                    // conditioning of the current basis decides (computed
+                    // only then: it costs a dense inverse).
+                    let tol = if le(err, tol_eq, 0.0) {
+                        tol_eq
+                    } else {
+                        let kappa = skeel_condition(&dense_basis(&basis, &a));
+                        tol_eq.max(2.0 * count(m) * f64::EPSILON * kappa)
+                    };
+                    prop_assert!(le(err, tol, 0.0),
+                        "transposed {transposed}, nnz {nnz}: error {err} > {tol}");
                 }
             }
             // One exchange with the spike recorded by either algorithm.
