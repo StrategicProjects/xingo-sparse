@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ae27928430511de09fddcca18b871057e923347930aa076659a808d2aaeda66f # shrinks to (n, ops) = (11, [Axpy(-80.38695535091655, [0.0, 0.0, 19.631476309375838, 0.0, 48.9667214468864, 15.94379752398182, 0.0, -55.469763495354464, -86.11024671138708, 0.0, -6.180783844792194], false), Axpy(-35.29162681860996, [-20.734550980228267, 15.841201864797476, 0.0, 45.225113885772465, 19.408582457092095, 0.0, -9.577273302744672, -86.10214974953686, 67.40501790484863, 80.51236967919716, 32.01074829754818], false), Set(0, 0.0)])

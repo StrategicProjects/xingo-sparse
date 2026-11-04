@@ -1,0 +1,21 @@
+# xingo-sparse (PLAN.md trilha L1, D-0080): publishable on its own, with
+# its own version (D12); it depends on no other crate of the workspace
+# (xingo-core depends on it, D9).
+[package]
+name = "xingo-sparse"
+version = "0.1.0-dev"
+description = "Sparse linear algebra for optimization: generic CSC/CSR containers, threshold-pivoting LU with Forrest-Tomlin basis updates and hypersparse solves"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["sparse", "linear-algebra", "lu", "simplex", "factorization"]
+categories = ["mathematics", "science", "algorithms"]
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
