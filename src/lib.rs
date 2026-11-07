@@ -80,11 +80,19 @@
 //! | `Lu<T, U = ForrestTomlin<T>>`, `LuFactor<T>`, `Factors<T>` | [`Lu`], [`LuFactor`], [`Factors`] |
 //! | `BasisUpdate<T>`, `ForrestTomlin<T>` | [`BasisUpdate`], [`ForrestTomlin`]                  |
 //! | `UpdateOutcome`, `RefactorReason` | [`UpdateOutcome`], [`RefactorReason`] (unchanged)      |
+//! | `Pattern`, `Perm`, `CscMatrix::{pattern, symmetric_pattern}` | [`Pattern`] (+ `transpose`, `symmetric`, `ata`, `cholesky_nnz`), [`Perm`] (L1.3) |
+//! | `Ordering`, `OrderingTarget`, `Natural`, `Amd`, `Colamd` | the same (L1.3; `Amd::default()` has aggressive absorption on) |
+//! | `PreOrder`, `LuOptions::pre_order`, `SymbolicLu`, `LuStats::symbolic_reuses` | [`PreOrder`], `Lu::{set_pre_order, pre_order}` (not an `LuOptions` field: see [`Lu::set_pre_order`]), [`SymbolicLu`] (+ `singletons`), `LuStats::{symbolic_reuses, symbolic_fallbacks}` (L1.3) |
+//! | `LuFactor::{refactorize_same_pattern, symbolic}` | the same (L1.3)                       |
 //!
-//! ## 5.E What the next tasks add
-//! * **L1.3** — `Perm`, `Pattern`, `Ordering` with `Natural`, `Amd` and
-//!   `Colamd` (our own), the reusable pivot sequence `SymbolicLu` with
-//!   `LuFactor::refactorize_same_pattern`, and `LuOptions::pre_order`.
+//! ## 5.E What the tasks add
+//! * **L1.3** (done) — [`Perm`] and [`Pattern`] (§5.9), the orderings
+//!   [`Natural`], [`Amd`] and [`Colamd`] behind [`Ordering`] (§5.10, our
+//!   own; their engine, Algorithm Q, in §5.11), the reusable pivot
+//!   sequence [`SymbolicLu`] with [`LuFactor::refactorize_same_pattern`]
+//!   and the COLAMD pre-order of the bump [`Lu::set_pre_order`] (§5.12,
+//!   step L5′ of §5.3). With `pre_order = None` (the default) Algorithm L
+//!   is unchanged, bit for bit; the simplex uses none of it yet.
 //! * **L1.4** (after P3.9) — `BartelsGolub<T>`, the second
 //!   [`BasisUpdate`]; the trait already separates the update policy from
 //!   the stored factors ([`Factors`]), so the simplex will not change.
@@ -118,7 +126,15 @@
 //! * §5.6 [`real`] — the scalar trait [`Real`] and the comparisons;
 //! * §5.7 [`index`] — the typed indices [`Col`] and [`Row`];
 //! * §5.8 [`compressed`], [`csc`], [`csr`], [`vector`] — the containers
-//!   (Algorithms T, C and S; Chapter 1.2 of the first edition).
+//!   (Algorithms T, C and S; Chapter 1.2 of the first edition);
+//! * §5.9 [`perm`] — [`Perm`] and [`Pattern`], and the Cholesky count of an
+//!   ordering (Algorithm E);
+//! * §5.10 [`ordering`] — [`Ordering`], [`Natural`], [`Amd`] (Algorithm A),
+//!   [`Colamd`] (Algorithm C);
+//! * §5.11 (private) — approximate minimum degree on a quotient graph
+//!   (Algorithm Q), the engine of both;
+//! * §5.12 [`symbolic`] — [`SymbolicLu`] and Algorithm R
+//!   ([`LuFactor::refactorize_same_pattern`]).
 //!
 //! ## Notation
 //! `B ∈ R^{m×m}`; *rows* `i` and basis *positions* `k` both range over
@@ -157,7 +173,8 @@
 //! Techniques of the Simplex Method* (2003), ch. 5 and 8; Davis, *Direct
 //! Methods for Sparse Linear Systems* (2006); Duff, Erisman & Reid (1986);
 //! Koberstein (2005), ch. 5; Gilbert & Peierls (1988); Hall & McKinnon
-//! (2005); Gustavson (1978); the contract of the crate
+//! (2005); Gustavson (1978); Amestoy, Davis & Duff (1996); Davis, Gilbert,
+//! Larimore & Ng (2004); the contract of the crate
 //! (`contracts/xingo-sparse`, D-0080).
 
 pub mod basis;
@@ -167,9 +184,13 @@ pub mod csr;
 pub mod error;
 pub mod factor;
 pub mod index;
+pub mod ordering;
+pub mod perm;
+mod qgraph;
 pub mod real;
 pub mod solve;
 mod store;
+pub mod symbolic;
 pub mod update;
 pub mod vector;
 
@@ -180,9 +201,12 @@ pub use basis::{ColumnRef, ColumnSource, Sign};
 pub use csc::CscMatrix;
 pub use csr::CsrMatrix;
 pub use error::{LuError, SparseError};
-pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats};
+pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder};
 pub use index::{Col, Row};
+pub use ordering::{Amd, Colamd, Natural, Ordering, OrderingTarget};
+pub use perm::{Pattern, Perm};
 pub use real::Real;
 pub use solve::{HYPER_HISTORY_WEIGHT, SolveStats};
+pub use symbolic::SymbolicLu;
 pub use update::{BasisUpdate, ForrestTomlin, RefactorReason, UpdateOutcome, UpdateStats};
 pub use vector::SparseVec;

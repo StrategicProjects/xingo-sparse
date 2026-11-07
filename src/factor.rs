@@ -66,6 +66,17 @@
 //!     L2; if no active column remains, go to L7. Run Algorithm M to obtain
 //!     a pivot and a list of dead columns; remove the dead columns, pivot
 //!     (step L6) and repeat L5.
+//! L5′. [Pre-ordered bump; only with [`Lu::set_pre_order`]`(Some(PreOrder::Colamd))`,
+//!     task L1.3.] Instead of L5: compute the
+//!     COLAMD order (Chapter 5.10, Algorithm C) of the columns of the bump
+//!     on its pattern; for each column `c` in that order that is still
+//!     active (after removing the empty columns as in L2): if `γ_c =
+//!     max_i |s_ic| ≤ τ_abs` declare `c` dead; otherwise pivot (step L6) on
+//!     the acceptable entry `(i, c)` of least row count `r_i` (ties: the
+//!     larger `|s_ic|`, then the first in the column) — threshold partial
+//!     pivoting inside a fixed column order, as UMFPACK and SuperLU do.
+//!     With `pre_order = None` step L5 runs exactly as before, so the
+//!     factors are bit for bit those of the second edition.
 //! L6. [Pivot on `(p, c)`.] Append the step `(p, c)` and the diagonal
 //!     `u_pc = s_pc`. For every other `(i, s_ic)` of column `c` record
 //!     `l_ic = s_ic / s_pc`; for every other `(p, s_pj)` of row `p` record
@@ -84,7 +95,11 @@
 //!     ([`LuError::Singular`]). Otherwise build the row and column
 //!     copies of `U`, the inverse step maps, and the statistics, including
 //!     the growth factor `max |u_ij| / max |b_ij|` and `max |u_ij|` itself,
-//!     the reference of the update policy (Chapter 5.5).
+//!     the reference of the update policy (Chapter 5.5). Record the pivot
+//!     sequence `(p_s, q_s)` as the [`SymbolicLu`] of Chapter 5.12 (into
+//!     the arrays of the previous one: `2m` copies, no allocation once
+//!     warm). Step L7 reads only the output of the elimination (`Elim`),
+//!     so Algorithm R of Chapter 5.12 shares it.
 //!
 //! ## Algorithm M (Markowitz search with threshold)
 //! Let `best` be the acceptable entry of least merit found so far (ties go
@@ -180,8 +195,9 @@ use crate::error::LuError;
 use crate::real::{Real, approx_eq, is_exact_zero, is_zero, lt};
 use crate::solve::{Kind, NO_ETA, SolveStats, Workspace};
 use crate::store::{CountLists, LineStore, NIL, check_links, remove_linked};
+use crate::symbolic::SymbolicLu;
 use crate::update::{BasisUpdate, ForrestTomlin, UpdateOutcome, UpdateStats};
-use crate::{Row, SparseError, SparseVec};
+use crate::{Colamd, Ordering, OrderingTarget, Pattern, Row, SparseError, SparseVec};
 
 /// Options of the factorization, of the solves and of the update policy.
 ///
@@ -228,6 +244,14 @@ pub struct LuOptions {
     /// zero by the elimination and the update (`1e-12`; the solver's
     /// `Tolerances::zero`).
     pub drop_tol: f64,
+}
+
+/// Column pre-orders available to the dynamic LU ([`Lu::set_pre_order`];
+/// the contract's `PreOrder`, which it placed in `LuOptions::pre_order`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreOrder {
+    /// [`crate::Colamd`] with its defaults on the columns of the bump.
+    Colamd,
 }
 
 impl Default for LuOptions {
@@ -303,6 +327,15 @@ pub struct LuStats {
     /// `growth > LuOptions::growth_limit`; a diagnostic of the
     /// factorization itself (a fresh factor may already be flagged).
     pub growth_exceeded: bool,
+    /// Refactorizations that reused the pivot sequence of the previous
+    /// factorization ([`LuFactor::refactorize_same_pattern`], Algorithm R
+    /// of Chapter 5.12), accumulated over the life of the object.
+    pub symbolic_reuses: usize,
+    /// Calls of [`LuFactor::refactorize_same_pattern`] that fell back to a
+    /// full factorization (no sequence, another order `m`, or a pivot
+    /// refused by the threshold test), accumulated over the life of the
+    /// object.
+    pub symbolic_fallbacks: usize,
 }
 
 /// The stored factors `P, L, U, Q` of a basis (row and column files,
@@ -411,6 +444,11 @@ pub struct Lu<T: Real = f64, U: BasisUpdate<T> = ForrestTomlin<T>> {
     /// Moving averages of the result density of FTRAN, BTRAN and FTRAN for
     /// update (Chapter 5.4, policy (c)).
     pub(crate) expected_density: [f64; 3],
+    /// The pivot sequence of the last successful factorization (Chapter
+    /// 5.12); `None` before it and after a failed one.
+    pub(crate) symbolic: Option<SymbolicLu>,
+    /// Column pre-order of the bump (step L5′); `None`: Algorithm M.
+    pub(crate) pre_order: Option<PreOrder>,
 }
 
 impl<T: Real, U: BasisUpdate<T>> Default for Lu<T, U> {
@@ -432,6 +470,17 @@ pub trait LuFactor<T: Real> {
     /// retry. On [`LuError::Structure`] (invariant (B1) violated) nothing
     /// was factorized.
     fn factorize<C: ColumnSource<T>>(&mut self, cols: &C) -> Result<(), LuError>;
+    /// Algorithm R (Chapter 5.12): factorizes the `m × m` basis `B` with
+    /// the pivot sequence of the last successful factorization — no
+    /// search, no count lists — as long as every pivot passes the
+    /// threshold test; otherwise (or without a sequence of order `m`) it
+    /// falls back to [`LuFactor::factorize`]. Meant for new values on the
+    /// same pattern; the outcome and the errors are those of `factorize`,
+    /// and [`LuStats::symbolic_reuses`] / [`LuStats::symbolic_fallbacks`]
+    /// say which path ran.
+    fn refactorize_same_pattern<C: ColumnSource<T>>(&mut self, cols: &C) -> Result<(), LuError>;
+    /// The pivot sequence of the last successful factorization, if any.
+    fn symbolic(&self) -> Option<&SymbolicLu>;
     /// `v ← B⁻¹ v`: row-indexed in, position-indexed out (D-0016).
     fn ftran(&mut self, v: &mut SparseVec<T>);
     /// `v ← B⁻ᵀ v`: position-indexed in, row-indexed out.
@@ -490,7 +539,29 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
             factors: Factors::default(),
             update: U::default(),
             expected_density: [0.0; 3],
+            symbolic: None,
+            pre_order: None,
         }
+    }
+
+    /// The column pre-order of the bump (step L5′; Chapter 5.12): `None`
+    /// (the default) runs Algorithm M exactly as before, bit for bit;
+    /// `Some(PreOrder::Colamd)` eliminates the bump in the COLAMD order of
+    /// its columns, choosing the row by threshold partial pivoting. Read at
+    /// the next [`LuFactor::factorize`].
+    ///
+    /// (The contract has it as a field `LuOptions::pre_order`; a field
+    /// would make `LuOptions`, and the simplex's `SimplexOptions` that
+    /// holds it, 8 bytes larger, past the 256-byte limit of clippy's
+    /// `large_types_passed_by_value` in the simplex and the MIP solver.)
+    pub fn set_pre_order(&mut self, pre_order: Option<PreOrder>) {
+        self.pre_order = pre_order;
+    }
+
+    /// The column pre-order in force ([`Lu::set_pre_order`]).
+    #[inline]
+    pub fn pre_order(&self) -> Option<PreOrder> {
+        self.pre_order
     }
 
     /// `true` iff a spike is recorded and [`LuFactor::update`] may be
@@ -506,8 +577,10 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
         &self.update
     }
 
-    /// Step L7: moves the factors out of the kernel, or reports singularity.
-    fn finish(&mut self, k: Kernel<T>) -> Result<(), LuError> {
+    /// Step L7: moves the factors out of the elimination (Algorithm L or
+    /// Algorithm R of Chapter 5.12), or reports singularity; records the
+    /// pivot sequence.
+    pub(crate) fn finish(&mut self, k: Elim<T>) -> Result<(), LuError> {
         let f = &mut self.factors;
         let m = f.m;
         let mut stats = LuStats {
@@ -521,9 +594,12 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
             ftran: f.stats.ftran,
             btran: f.stats.btran,
             ftran_update: f.stats.ftran_update,
+            symbolic_reuses: f.stats.symbolic_reuses,
+            symbolic_fallbacks: f.stats.symbolic_fallbacks,
             ..LuStats::default()
         };
         if !k.dead.is_empty() {
+            self.symbolic = None;
             let mut cols = k.dead;
             cols.sort_unstable();
             let mut pivoted = vec![false; m];
@@ -595,6 +671,14 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
         self.update.reset(m, update_growth);
         f.valid = true;
         debug_assert!(f.check_invariants().is_ok(), "{:?}", f.check_invariants());
+        // The reusable pivot sequence (Chapter 5.12), into the buffers of
+        // the previous one.
+        let sym = self.symbolic.get_or_insert_with(SymbolicLu::default);
+        sym.pivot_rows.clone_from(&f.step_row);
+        sym.pivot_cols.clone_from(&f.step_col);
+        sym.singletons = stats.col_singletons + stats.row_singletons;
+        sym.nnz_l = stats.nnz_l;
+        sym.nnz_u = stats.nnz_u;
         Ok(())
     }
 }
@@ -610,10 +694,23 @@ impl<T: Real, U: BasisUpdate<T>> LuFactor<T> for Lu<T, U> {
         let mut k = Kernel::load(cols, self.opts);
         // L2–L4. Triangular phase.
         k.triangular_phase();
-        // L5. Markowitz phase on the bump.
-        k.markowitz_phase();
+        match self.pre_order {
+            // L5. Markowitz phase on the bump.
+            None => k.markowitz_phase(),
+            // L5′. The bump in its COLAMD column order.
+            Some(PreOrder::Colamd) => k.preordered_phase(),
+        }
         // L7. Finish.
-        self.finish(k)
+        self.finish(k.into_elim())
+    }
+
+    fn refactorize_same_pattern<C: ColumnSource<T>>(&mut self, cols: &C) -> Result<(), LuError> {
+        self.refactorize_impl(cols)
+    }
+
+    #[inline]
+    fn symbolic(&self) -> Option<&SymbolicLu> {
+        self.symbolic.as_ref()
     }
 
     #[inline]
@@ -843,6 +940,26 @@ struct Kernel<T: Real> {
     markowitz_pivots: usize,
 }
 
+/// The output of an elimination — Algorithm L's kernel or Algorithm R of
+/// Chapter 5.12 — that step L7 turns into [`Factors`].
+pub(crate) struct Elim<T: Real> {
+    pub(crate) nnz_basis: usize,
+    pub(crate) max_basis: T,
+    pub(crate) col_singletons: usize,
+    pub(crate) row_singletons: usize,
+    pub(crate) markowitz_pivots: usize,
+    pub(crate) step_row: Vec<u32>,
+    pub(crate) step_col: Vec<u32>,
+    pub(crate) diag: Vec<T>,
+    pub(crate) l_start: Vec<usize>,
+    pub(crate) l_pivot: Vec<u32>,
+    pub(crate) l_index: Vec<u32>,
+    pub(crate) l_value: Vec<T>,
+    /// Off-diagonal `U` entries `(i, j, u_ij)`.
+    pub(crate) u_trip: Vec<(u32, u32, T)>,
+    pub(crate) dead: Vec<usize>,
+}
+
 /// A candidate pivot of Algorithm M.
 #[derive(Clone, Copy)]
 struct Candidate<T: Real> {
@@ -927,6 +1044,111 @@ impl<T: Real> Kernel<T> {
             row_singletons: 0,
             markowitz_pivots: 0,
         }
+    }
+
+    /// The output fields, moved (step L7 reads nothing else).
+    fn into_elim(self) -> Elim<T> {
+        Elim {
+            nnz_basis: self.nnz_basis,
+            max_basis: self.max_basis,
+            col_singletons: self.col_singletons,
+            row_singletons: self.row_singletons,
+            markowitz_pivots: self.markowitz_pivots,
+            step_row: self.step_row,
+            step_col: self.step_col,
+            diag: self.diag,
+            l_start: self.l_start,
+            l_pivot: self.l_pivot,
+            l_index: self.l_index,
+            l_value: self.l_value,
+            u_trip: self.u_trip,
+            dead: self.dead,
+        }
+    }
+
+    /// Step L5′: the bump in the COLAMD order of its columns, each column
+    /// pivoted on its acceptable entry of least row count (ties: larger
+    /// magnitude, then the first in the column).
+    fn preordered_phase(&mut self) {
+        self.kill_empty_columns();
+        for c in self.bump_order() {
+            self.kill_empty_columns();
+            if !self.col_lists.contains(c) {
+                continue;
+            }
+            let gamma = self
+                .cols
+                .line(c)
+                .1
+                .iter()
+                .fold(T::ZERO, |g, &v| g.max(v.abs()));
+            if !self.above_abs(gamma) {
+                self.kill(c);
+                continue;
+            }
+            let u = self.rel_tol;
+            let mut best: Option<(usize, usize, T)> = None;
+            let (idx, val) = self.cols.line(c);
+            for (&i, &v) in idx.iter().zip(val) {
+                let (i, a) = (i as usize, v.abs());
+                if !self.above_abs(v) || lt(a, u * gamma) {
+                    continue;
+                }
+                let r = self.rows.len(i);
+                if best.is_none_or(|(_, rb, ab)| r < rb || (r == rb && lt(ab, a))) {
+                    best = Some((i, r, a));
+                }
+            }
+            let (i, _, _) = best.expect("the largest entry is acceptable");
+            self.pivot(i, c);
+            self.markowitz_pivots += 1;
+        }
+        self.kill_empty_columns();
+        debug_assert_eq!(
+            self.col_lists.size(),
+            0,
+            "every bump column is pivoted or dead"
+        );
+    }
+
+    /// Step L5′, first part: the COLAMD order (Chapter 5.10, Algorithm C)
+    /// of the active columns, on the pattern of the active submatrix.
+    fn bump_order(&self) -> Vec<usize> {
+        let mut row_of = vec![NIL; self.m];
+        let mut n_rows = 0;
+        for (i, r) in row_of.iter_mut().enumerate() {
+            if self.row_lists.contains(i) {
+                *r = n_rows;
+                n_rows += 1;
+            }
+        }
+        let active: Vec<usize> = (0..self.m)
+            .filter(|&j| self.col_lists.contains(j))
+            .collect();
+        let mut col_ptr = Vec::with_capacity(active.len() + 1);
+        let mut row_idx = Vec::new();
+        col_ptr.push(0);
+        for &j in &active {
+            let start = row_idx.len();
+            row_idx.extend(
+                self.cols
+                    .indices(j)
+                    .iter()
+                    .map(|&i| idx32(row_of[i as usize])),
+            );
+            row_idx[start..].sort_unstable();
+            col_ptr.push(row_idx.len());
+        }
+        let pattern = Pattern {
+            n_rows,
+            col_ptr,
+            row_idx,
+        };
+        debug_assert_eq!(pattern.check_invariants(), Ok(()));
+        let perm = Colamd::default()
+            .order(&pattern, OrderingTarget::Columns)
+            .expect("a valid pattern");
+        perm.fwd.iter().map(|&k| active[k as usize]).collect()
     }
 
     /// `|v| > τ_abs`.

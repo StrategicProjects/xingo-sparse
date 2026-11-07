@@ -1,12 +1,12 @@
 //! Tests of Chapter 5: dense oracles, generators of simplex-like bases and
-//! the property tests of tasks P1.1 and P1.2.
+//! the property tests of tasks P1.1, P1.2 and L1.3 (step L5′, Algorithm R).
 
 use proptest::prelude::*;
 
 use crate::real::{approx_eq, is_exact_zero, le, lt};
 use crate::{
-    Col, ColumnRef, CscMatrix, Lu, LuError, LuFactor, LuOptions, RefactorReason, Row, Sign,
-    SparseVec, UpdateOutcome,
+    Col, ColumnRef, CscMatrix, Lu, LuError, LuFactor, LuOptions, PreOrder, RefactorReason, Row,
+    Sign, SparseVec, UpdateOutcome,
 };
 
 /// The factor of these tests: `f64`, Forrest–Tomlin.
@@ -1136,4 +1136,166 @@ fn alternation_policy_and_statistics() {
     let s = g.stats().ftran;
     assert!(s.hyper_calls < s.calls, "{s:?}");
     assert!(g.expected_densities()[0] > 0.1);
+}
+
+// ---------------------------------------------------------------------------
+// L1.3 — the COLAMD pre-order of the bump (step L5′) and Algorithm R.
+// ---------------------------------------------------------------------------
+
+/// A factor with the COLAMD pre-order of the bump.
+fn colamd_lu() -> LuF64 {
+    let mut f = LuF64::default();
+    f.set_pre_order(Some(PreOrder::Colamd));
+    assert_eq!(f.pre_order(), Some(PreOrder::Colamd));
+    f
+}
+
+/// `a` with every value multiplied by a factor in `[1 − ρ, 1 + ρ]`: the
+/// same pattern, new values.
+fn perturbed(rng: &mut Rng, a: &CscMatrix, rho: f64) -> CscMatrix {
+    let mut b = a.clone();
+    for v in &mut b.val {
+        let t = f64::from(u32::try_from(rng.below(2001)).unwrap()) / 1000.0 - 1.0;
+        *v *= 1.0 + rho * t;
+    }
+    b
+}
+
+/// The factor is valid and agrees with the dense oracle.
+fn assert_factor_matches(f: &mut LuF64, basis: &[ColumnRef], a: &CscMatrix, rng: &mut Rng) {
+    assert!(f.check_invariants().is_ok(), "{:?}", f.check_invariants());
+    let b = dense_basis(basis, a);
+    let res = lu_residual(f, &b);
+    assert!(res < 1e-14, "residual {res}");
+    let rhs = rng.dense_ints(basis.len());
+    let x = ftran_vec(f, &rhs);
+    let x_ref = dense_solve(&b, &rhs).unwrap();
+    assert!(
+        rel_err(&x, &x_ref) < 1e-9,
+        "ftran error {}",
+        rel_err(&x, &x_ref)
+    );
+    let y = btran_vec(f, &rhs);
+    let y_ref = dense_solve(&transpose(&b), &rhs).unwrap();
+    assert!(
+        rel_err(&y, &y_ref) < 1e-9,
+        "btran error {}",
+        rel_err(&y, &y_ref)
+    );
+}
+
+#[test]
+fn pre_order_defaults_to_none() {
+    let f = LuF64::default();
+    assert_eq!(f.pre_order(), None);
+    assert!(f.symbolic().is_none());
+    assert_eq!(f.stats().symbolic_reuses + f.stats().symbolic_fallbacks, 0);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases(96)))]
+
+    /// Step L5′: with the COLAMD pre-order the factorization satisfies
+    /// `L U = P B Q` and solves like the dense oracle; its pivot sequence
+    /// is recorded (invariant (R3)).
+    #[test]
+    fn preordered_factorization_is_valid(m in 1_usize..40, kind in 0_usize..4, seed in any::<u64>()) {
+        let mut rng = Rng::new(seed);
+        let (a, basis) = gen_basis(&mut rng, m, shape_of(kind), 0);
+        let mut f = colamd_lu();
+        fz(&mut f, &basis, &a).unwrap();
+        assert_factor_matches(&mut f, &basis, &a, &mut rng);
+        let s = *f.stats();
+        prop_assert_eq!(s.col_singletons + s.row_singletons + s.markowitz_pivots, m);
+        let sym = f.symbolic().unwrap().clone();
+        prop_assert!(crate::Perm::from_fwd(sym.pivot_rows.clone()).is_ok());
+        prop_assert!(crate::Perm::from_fwd(sym.pivot_cols.clone()).is_ok());
+        prop_assert_eq!(sym.singletons, s.col_singletons + s.row_singletons);
+        prop_assert_eq!((sym.nnz_l, sym.nnz_u), (s.nnz_l, s.nnz_u));
+    }
+
+    /// Algorithm R: the same values replay the sequence (never a
+    /// fallback); new values on the same pattern replay it or fall back,
+    /// and in every case the factor is valid and solves correctly;
+    /// Forrest–Tomlin updates work on a refactorized factor.
+    #[test]
+    fn refactorization_reuses_the_sequence(m in 1_usize..40, kind in 0_usize..4, pre in any::<bool>(),
+                                            rho in 0.0_f64..0.5, seed in any::<u64>()) {
+        let mut rng = Rng::new(seed);
+        let (a, basis) = gen_basis(&mut rng, m, shape_of(kind), 4);
+        let mut f = if pre { colamd_lu() } else { LuF64::default() };
+        fz(&mut f, &basis, &a).unwrap();
+        let sym = f.symbolic().unwrap().clone();
+        f.refactorize_same_pattern(&(&basis[..], &a)).unwrap();
+        prop_assert_eq!((f.stats().symbolic_reuses, f.stats().symbolic_fallbacks), (1, 0));
+        prop_assert_eq!(f.symbolic().unwrap().pivot_rows.clone(), sym.pivot_rows.clone());
+        prop_assert_eq!(f.symbolic().unwrap().pivot_cols.clone(), sym.pivot_cols.clone());
+        prop_assert_eq!(f.stats().factorizations, 2);
+        assert_factor_matches(&mut f, &basis, &a, &mut rng);
+
+        let a2 = perturbed(&mut rng, &a, rho);
+        f.refactorize_same_pattern(&(&basis[..], &a2)).unwrap();
+        let s = *f.stats();
+        prop_assert_eq!(s.symbolic_reuses + s.symbolic_fallbacks, 2);
+        assert_factor_matches(&mut f, &basis, &a2, &mut rng);
+
+        // Updates on top of a replayed factor.
+        let n = a2.n_cols();
+        for step in 0..3.min(m) {
+            let q = ColumnRef::Structural(Col::from_usize(n - 1 - step % 4));
+            let (_, out) = exchange(&mut f, &mut rng, &a2, q);
+            if !matches!(out, Ok(UpdateOutcome::Updated)) {
+                break;
+            }
+            prop_assert!(f.check_invariants().is_ok());
+        }
+    }
+}
+
+/// Algorithm R falls back to Algorithm L without a sequence, with a
+/// sequence of another order, and when a pivot fails the threshold test;
+/// a singular basis is diagnosed as by `factorize` and drops the sequence.
+#[test]
+fn refactorization_falls_back() {
+    let mut rng = Rng::new(17);
+    let (a, basis) = gen_basis(&mut rng, 30, SPARSE, 0);
+    let mut f = LuF64::default();
+    // No sequence yet.
+    f.refactorize_same_pattern(&(&basis[..], &a)).unwrap();
+    assert_eq!(
+        (f.stats().symbolic_reuses, f.stats().symbolic_fallbacks),
+        (0, 1)
+    );
+    assert_factor_matches(&mut f, &basis, &a, &mut rng);
+    // Another order.
+    let (a3, basis3) = gen_basis(&mut rng, 12, DENSE, 0);
+    f.refactorize_same_pattern(&(&basis3[..], &a3)).unwrap();
+    assert_eq!(f.stats().symbolic_fallbacks, 2);
+    assert_factor_matches(&mut f, &basis3, &a3, &mut rng);
+    // A refused pivot: shrink the pivot entry of a bump step.
+    let (a4, basis4) = gen_basis(&mut rng, 25, DENSE, 0);
+    fz(&mut f, &basis4, &a4).unwrap();
+    let sym = f.symbolic().unwrap().clone();
+    assert!(sym.singletons < 25);
+    let s = sym.singletons;
+    let (p, k) = (sym.pivot_rows[s], sym.pivot_cols[s] as usize);
+    let ColumnRef::Structural(j) = basis4[k] else {
+        panic!("DENSE bases are structural");
+    };
+    let mut a5 = a4.clone();
+    let r = a5.col_ptr[j.index()]..a5.col_ptr[j.index() + 1];
+    let at = r
+        .clone()
+        .find(|&q| a5.row_idx[q] == p)
+        .expect("the pivot is stored");
+    a5.val[at] = 1e-9;
+    f.refactorize_same_pattern(&(&basis4[..], &a5)).unwrap();
+    assert_eq!(f.stats().symbolic_fallbacks, 3);
+    assert_factor_matches(&mut f, &basis4, &a5, &mut rng);
+    // A singular basis.
+    let mut dep = basis4.clone();
+    dep[1] = dep[0];
+    let e = f.refactorize_same_pattern(&(&dep[..], &a4)).unwrap_err();
+    assert!(matches!(e, LuError::Singular { .. }));
+    assert!(f.symbolic().is_none() && !f.is_valid());
 }

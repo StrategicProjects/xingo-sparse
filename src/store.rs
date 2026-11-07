@@ -572,6 +572,12 @@ impl CountLists {
         }
     }
 
+    /// `true` iff `e` is in some list.
+    #[inline]
+    pub(crate) fn contains(&self, e: usize) -> bool {
+        self.count[e] != NIL
+    }
+
     /// First element of bucket `c`.
     #[inline]
     pub(crate) fn first(&self, c: usize) -> Option<usize> {
