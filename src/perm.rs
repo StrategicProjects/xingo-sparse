@@ -555,7 +555,7 @@ mod tests {
         let p = Pattern::from_raw_parts(3, vec![0, 2, 2, 3], vec![0, 2, 1]).unwrap();
         assert_eq!((p.n_rows(), p.n_cols(), p.nnz()), (3, 3, 3));
         assert_eq!(p.col(0), &[0, 2]);
-        assert!(p.col(1).is_empty());
+        assert_eq!(p.col(1), []);
         assert!(Pattern::empty(2, 3).check_invariants().is_ok());
         let a = CscMatrix::<f64>::from_raw_parts(
             3,

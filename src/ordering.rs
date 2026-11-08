@@ -572,7 +572,7 @@ mod tests {
                     .unwrap()
                     .is_empty()
             );
-            assert!(!o.name().is_empty());
+            assert_ne!(o.name(), "");
         }
         assert_eq!(dense_threshold(None, 100), 100);
         assert_eq!(dense_threshold(Some(1.0), 4), DENSE_MIN);
