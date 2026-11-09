@@ -84,6 +84,10 @@
 //! | `Ordering`, `OrderingTarget`, `Natural`, `Amd`, `Colamd` | the same (L1.3; `Amd::default()` has aggressive absorption on) |
 //! | `PreOrder`, `LuOptions::pre_order`, `SymbolicLu`, `LuStats::symbolic_reuses` | [`PreOrder`], `Lu::{set_pre_order, pre_order}` (not an `LuOptions` field: see [`Lu::set_pre_order`]), [`SymbolicLu`] (+ `singletons`), `LuStats::{symbolic_reuses, symbolic_fallbacks}` (L1.3) |
 //! | `LuFactor::{refactorize_same_pattern, symbolic}` | the same (L1.3)                       |
+//! | `Equilibration`, `Scaling<T>` | [`Equilibration`], [`Scaling`] (+ `check_invariants`; §5.13, L1.5) |
+//! | `Inertia`, `Regularization<T>`, `Refinement<T>`, `RefineReport<T>`, `KktForm`, `KktSolver<T>`, `KktError` | the same (§5.14, L1.5), plus `Default` for the option structs, `Regularization::{none, relative_to, is_quasi_definite}`, `KktForm::expected_inertia`, `KktError::Structure`, [`EQUILIBRATION_PASSES`]; the augmented inertia reads `{positive: m, negative: n}` |
+//! | `FaerLdl`, `FaerSymbolic`, `FaerNumeric<T>` (feature `faer`) | the same (§5.15, L1.5), plus read-only accessors |
+//! | `DenseBlock<T>`, `DenseKernel<T>`, `NaiveDense`, `FaerDense`, `DenseError` | the same (§5.16, L1.5); `sytrf` also returns its permutation and `2×2` marks |
 //!
 //! ## 5.E What the tasks add
 //! * **L1.3** (done) — [`Perm`] and [`Pattern`] (§5.9), the orderings
@@ -96,10 +100,16 @@
 //! * **L1.4** (after P3.9) — `BartelsGolub<T>`, the second
 //!   [`BasisUpdate`]; the trait already separates the update policy from
 //!   the stored factors ([`Factors`]), so the simplex will not change.
-//! * **L1.5** — `KktSolver` with `FaerLdl`, regularization, iterative
-//!   refinement, `Equilibration`/`Scaling`, and the dense kernels
-//!   (`DenseKernel`, `NaiveDense`, `FaerDense`); `Triplets` and
-//!   `BlockPartition` when a consumer needs them.
+//! * **L1.5** (done) — row/column scaling [`Scaling`] by the policies of
+//!   [`Equilibration`] (§5.13); the KKT interface [`KktSolver`] with the
+//!   regularization policy and the iterative refinement shared by every
+//!   backend (§5.14); its v0.1 backend [`FaerLdl`] over faer's sparse
+//!   `LDLᵀ`/`LBLᵀ` ordered by our [`Amd`] (§5.15, feature `faer`); and the
+//!   dense kernels [`DenseKernel`], [`NaiveDense`] and `FaerDense`
+//!   (§5.16). `Triplets` and `BlockPartition` wait for a consumer
+//!   ([`CscMatrix::from_triplets`] covers the builder today). The simplex
+//!   uses none of it, and faer is not in the solver's build: the workspace
+//!   depends on this crate without default features.
 //! * **L1.6** — the own `SupernodalLdl<T, K>`, after the interior-point
 //!   method has measured faer.
 //!
@@ -109,7 +119,8 @@
 //! and replace one column of `B`. This crate provides them
 //! (`PLAN.md` §5 items 1–2, tasks P1.1–P1.2):
 //!
-//! * §5.0 [`error`] — [`SparseError`] and [`LuError`];
+//! * §5.0 [`error`] — [`SparseError`], [`LuError`], [`KktError`] and
+//!   [`DenseError`];
 //! * §5.1 [`basis`] — how the basis is named: [`ColumnRef`] into `[A | ±I]`,
 //!   and the general [`ColumnSource`];
 //! * §5.2 (private) — dynamic row/column files and count lists;
@@ -134,7 +145,14 @@
 //! * §5.11 (private) — approximate minimum degree on a quotient graph
 //!   (Algorithm Q), the engine of both;
 //! * §5.12 [`symbolic`] — [`SymbolicLu`] and Algorithm R
-//!   ([`LuFactor::refactorize_same_pattern`]).
+//!   ([`LuFactor::refactorize_same_pattern`]);
+//! * §5.13 [`scaling`] — [`Equilibration`] and [`Scaling`] (Algorithms G,
+//!   R and I);
+//! * §5.14 [`kkt`] — [`KktSolver`] and its shared policy: regularization
+//!   (Algorithm K) and iterative refinement (Algorithm F);
+//! * §5.15 `faer_ldl` (feature `faer`) — [`FaerLdl`] (Algorithms A, N, S);
+//! * §5.16 [`dense`] — [`DenseKernel`], [`NaiveDense`], `FaerDense`
+//!   (Algorithms P, B, T, G, S).
 //!
 //! ## Notation
 //! `B ∈ R^{m×m}`; *rows* `i` and basis *positions* `k` both range over
@@ -167,6 +185,8 @@
 //! Per D-0006 this is the one crate where `unsafe` is permitted (audited,
 //! `// SAFETY:` comments, Miri where executable). This edition, like the
 //! first, uses none; optimized kernels wait for measurements (task P1.10).
+//! The `faer` feature (L1.5) brings faer's own `unsafe` kernels in as a
+//! dependency; the code of this crate stays free of `unsafe`.
 //!
 //! ## References
 //! Suhl & Suhl (1990); Forrest & Tomlin (1972); Maros, *Computational
@@ -177,17 +197,25 @@
 //! Larimore & Ng (2004); the contract of the crate
 //! (`contracts/xingo-sparse`, D-0080).
 
+// Without `faer`, the chapter text still names FaerLdl/FaerDense.
+#![cfg_attr(not(feature = "faer"), allow(rustdoc::broken_intra_doc_links))]
+
 pub mod basis;
 pub mod compressed;
 pub mod csc;
 pub mod csr;
+pub mod dense;
 pub mod error;
 pub mod factor;
+#[cfg(feature = "faer")]
+pub mod faer_ldl;
 pub mod index;
+pub mod kkt;
 pub mod ordering;
 pub mod perm;
 mod qgraph;
 pub mod real;
+pub mod scaling;
 pub mod solve;
 mod store;
 pub mod symbolic;
@@ -200,12 +228,21 @@ mod tests;
 pub use basis::{ColumnRef, ColumnSource, Sign};
 pub use csc::CscMatrix;
 pub use csr::CsrMatrix;
-pub use error::{LuError, SparseError};
+#[cfg(feature = "faer")]
+pub use dense::FaerDense;
+pub use dense::{DenseBlock, DenseKernel, NaiveDense};
+pub use error::{DenseError, KktError, LuError, SparseError};
 pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder};
+#[cfg(feature = "faer")]
+pub use faer_ldl::{FaerLdl, FaerNumeric, FaerSymbolic};
 pub use index::{Col, Row};
+pub use kkt::{
+    EQUILIBRATION_PASSES, Inertia, KktForm, KktSolver, RefineReport, Refinement, Regularization,
+};
 pub use ordering::{Amd, Colamd, Natural, Ordering, OrderingTarget};
 pub use perm::{Pattern, Perm};
 pub use real::Real;
+pub use scaling::{Equilibration, Scaling};
 pub use solve::{HYPER_HISTORY_WEIGHT, SolveStats};
 pub use symbolic::SymbolicLu;
 pub use update::{BasisUpdate, ForrestTomlin, RefactorReason, UpdateOutcome, UpdateStats};

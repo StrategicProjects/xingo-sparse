@@ -8,6 +8,10 @@
 //! the crate returns the same type. The factorization reports a singular
 //! basis, an inconsistent basis description, or an update called without
 //! its spike, as an [`LuError`] carrying what the caller needs to recover.
+//! Since L1.5 two more kinds join them: the symmetric (KKT) solvers of
+//! Chapter 5.14 report a [`KktError`] — structure, symmetry, a zero pivot
+//! or the wrong inertia (S6) — and the dense kernels of Chapter 5.16 a
+//! [`DenseError`].
 //!
 //! `xingo-core` converts both into its `CoreError` (`From` impls there):
 //! a [`SparseError`] maps variant by variant onto the `CoreError` that the
@@ -168,3 +172,102 @@ impl From<SparseError> for LuError {
         Self::Structure(e)
     }
 }
+
+/// Error raised by a [`crate::KktSolver`] (Chapter 5.14).
+///
+/// As in [`LuError`], structural problems of the input are reported in a
+/// [`KktError::Structure`] carrying the [`SparseError`] of the container
+/// check, so `Eq` is not derived (the [`SparseError::InvalidValue`]
+/// variant holds an `f64`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum KktError {
+    /// The pattern is not square, or it stores entries on both sides of
+    /// the diagonal without being structurally symmetric (invariant (K1)
+    /// of Chapter 5.14).
+    NotSymmetric,
+    /// A pivot of the factorization is exactly zero (or not finite) and no
+    /// dynamic regularization was asked for (or it could not lift it);
+    /// `position` is the row of `K` (original numbering) whose pivot
+    /// failed.
+    ZeroPivot {
+        /// Row of `K`, in the caller's numbering.
+        position: usize,
+    },
+    /// The inertia of the factorization differs from the one the form
+    /// requires (invariant (S6)).
+    WrongInertia {
+        /// The inertia of the computed factorization.
+        found: crate::Inertia,
+        /// The inertia [`crate::KktForm`] requires.
+        expected: crate::Inertia,
+    },
+    /// The matrix does not satisfy the container invariants (S1), its
+    /// dimensions do not match the form or the analysis, or its lower
+    /// triangle has an entry outside the analyzed pattern.
+    Structure(SparseError),
+    /// The backend ran out of memory or refused the problem.
+    Backend(&'static str),
+}
+
+impl fmt::Display for KktError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotSymmetric => write!(f, "the KKT pattern is not square and symmetric"),
+            Self::ZeroPivot { position } => write!(f, "zero pivot at row {position}"),
+            Self::WrongInertia { found, expected } => write!(
+                f,
+                "wrong inertia: found ({}, {}, {}), expected ({}, {}, {})",
+                found.positive,
+                found.negative,
+                found.zero,
+                expected.positive,
+                expected.negative,
+                expected.zero
+            ),
+            Self::Structure(e) => write!(f, "invalid KKT matrix: {e}"),
+            Self::Backend(what) => write!(f, "KKT backend failure: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for KktError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Structure(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<SparseError> for KktError {
+    fn from(e: SparseError) -> Self {
+        Self::Structure(e)
+    }
+}
+
+/// Error raised by a [`crate::DenseKernel`] (Chapter 5.16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DenseError {
+    /// The block is not positive definite: the pivot of column `position`
+    /// is not positive (or not finite).
+    NotPositiveDefinite {
+        /// Column whose pivot failed.
+        position: usize,
+    },
+    /// The dimensions of the blocks do not agree (or a block that must be
+    /// square is not).
+    Dimension,
+}
+
+impl fmt::Display for DenseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPositiveDefinite { position } => {
+                write!(f, "block not positive definite at column {position}")
+            }
+            Self::Dimension => write!(f, "block dimensions do not agree"),
+        }
+    }
+}
+
+impl std::error::Error for DenseError {}
