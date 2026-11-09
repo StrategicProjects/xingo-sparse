@@ -58,6 +58,34 @@
 //! time a root is reached is Liu's elimination-tree algorithm without path
 //! compression.
 //!
+//! ## Algorithm P (Postorder of the elimination tree, heaviest child last)
+//! *New with task L1.5b.* Given `G` and `π`, a permutation `π′` with the
+//! same filled graph whose subtrees are contiguous and whose heaviest
+//! child comes right before its parent.
+//!
+//! P1. Run Algorithm E, keeping `parent[k]` and the column counts `c_k`
+//!     (entries of column `k` of `L`, diagonal included).
+//! P2. Order the children of every node by increasing `(c, k)`: the child
+//!     with the largest column count — the largest front — last.
+//! P3. Visit the roots in increasing order, each subtree depth first with
+//!     the children in the order of P2, and number every node after its
+//!     children: `post[t]` is the `t`-th node. Return `fwd′[t] =
+//!     fwd[post[t]]`.
+//!
+//! Every topological order of the elimination tree — a postorder in
+//! particular — eliminates with the same filled graph (Liu 1990, §3), so
+//! `nnz(L)` does not change; the postorder makes each subtree a run of
+//! consecutive columns, so every chain of only children (a fundamental
+//! supernode) is contiguous; and placing the heaviest child last puts the
+//! largest front next to its parent. That matters to a supernodal
+//! backend: faer 0.24 (read, not copied) merges a child supernode into its
+//! parent in its relaxed amalgamation *only* when the child immediately
+//! precedes the parent, and SuiteSparse's AMD postorders its assembly tree
+//! with the largest front last for the same reason. With the children in
+//! index order instead, faer stored 2.78 M entries of `L` for the
+//! augmented system of maros-r7 (the same 1.21 M structural ones) and
+//! factorized 11× slower (task L1.5b, D4). Cost `O(nnz(L) + n log n)`.
+//!
 //! ## Algorithm G (The pattern of `SᵀS`)
 //! For COLAMD (Chapter 5.10) the relevant symmetric graph is that of `SᵀS`,
 //! whose Cholesky factor bounds the `U` of an LU with partial pivoting and
@@ -78,6 +106,9 @@
 //!      than `n_rows`. Checked by [`Pattern::check_invariants`].
 //! (P3) The outputs of Algorithms S and G are symmetric patterns that
 //!      satisfy (P2).
+//! (P4) Algorithm P returns a permutation with the `nnz(L)` of its input
+//!      (checked in the tests against Algorithm E), in which every node
+//!      comes after all of its elimination-tree descendants.
 //!
 //! ## References
 //! Liu, "A compact row storage scheme for Cholesky factors using
@@ -386,33 +417,58 @@ impl Pattern {
             });
         }
         perm.check_invariants()?;
-        let g = self.symmetric()?;
-        // E1.
+        let (_, counts) = etree_counts(&self.symmetric()?, perm);
+        // E3.
+        Ok(counts.iter().sum())
+    }
+
+    /// Algorithm P on the symmetric pattern `self` (both triangles, as
+    /// [`Pattern::symmetric`] returns): `perm` re-postordered by its
+    /// elimination tree, heaviest child last (invariant (P4)).
+    #[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by the KKT backends
+    pub(crate) fn etree_postorder(&self, perm: &Perm) -> Perm {
+        let n = perm.len();
+        debug_assert_eq!(self.n_cols(), n);
+        // P1.
+        let (parent, counts) = etree_counts(self, perm);
+        // P2. Children grouped by parent, by increasing (count, index).
         let none = usize::MAX;
-        let mut parent = vec![none; n];
-        let mut mark = vec![none; n];
-        let mut count = n;
-        // E2.
+        let mut kids: Vec<(usize, usize, usize)> = (0..n)
+            .filter(|&k| parent[k] != none)
+            .map(|k| (parent[k], counts[k], k))
+            .collect();
+        kids.sort_unstable();
+        let mut start = vec![0_usize; n + 1];
+        for &(p, _, _) in &kids {
+            start[p + 1] += 1;
+        }
         for k in 0..n {
-            mark[k] = k;
-            for &i in g.col(perm.fwd[k] as usize) {
-                let mut x = perm.inv[i as usize] as usize;
-                if x >= k {
-                    continue;
-                }
-                while mark[x] != k {
-                    mark[x] = k;
-                    count += 1;
-                    if parent[x] == none {
-                        parent[x] = k;
-                        break;
-                    }
-                    x = parent[x];
+            start[k + 1] += start[k];
+        }
+        // P3.
+        let mut fwd = Vec::with_capacity(n);
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        for root in (0..n).filter(|&k| parent[k] == none) {
+            stack.push((root, start[root]));
+            while let Some(top) = stack.last_mut() {
+                let (x, next) = *top;
+                if next < start[x + 1] {
+                    top.1 += 1;
+                    let c = kids[next].2;
+                    stack.push((c, start[c]));
+                } else {
+                    stack.pop();
+                    fwd.push(perm.fwd[x]);
                 }
             }
         }
-        // E3.
-        Ok(count)
+        let post = Perm::from_fwd(fwd).expect("(P4): a postorder is a permutation");
+        debug_assert!(
+            (0..n).all(|k| parent[k] == none
+                || post.inv[perm.fwd[k] as usize] < post.inv[perm.fwd[parent[k]] as usize]),
+            "(P4): a node before its parent"
+        );
+        post
     }
 
     /// Checks invariant (P2).
@@ -474,6 +530,38 @@ impl<T: Real> CscMatrix<T> {
 
 /// Converts an index below `u32::MAX` to `u32`.
 #[inline]
+/// Algorithm E (steps E1–E2) on the symmetric graph `g` under `perm`: the
+/// elimination tree (`parent[k]`, `usize::MAX` for a root; positions in
+/// the new order) and the column counts of `L` (diagonal included).
+fn etree_counts(g: &Pattern, perm: &Perm) -> (Vec<usize>, Vec<usize>) {
+    let n = perm.len();
+    // E1.
+    let none = usize::MAX;
+    let mut parent = vec![none; n];
+    let mut mark = vec![none; n];
+    let mut counts = vec![1_usize; n];
+    // E2.
+    for k in 0..n {
+        mark[k] = k;
+        for &i in g.col(perm.fwd[k] as usize) {
+            let mut x = perm.inv[i as usize] as usize;
+            if x >= k {
+                continue;
+            }
+            while mark[x] != k {
+                mark[x] = k;
+                counts[x] += 1;
+                if parent[x] == none {
+                    parent[x] = k;
+                    break;
+                }
+                x = parent[x];
+            }
+        }
+    }
+    (parent, counts)
+}
+
 pub(crate) fn idx32(i: usize) -> u32 {
     u32::try_from(i).expect("index exceeds u32::MAX")
 }
@@ -611,6 +699,50 @@ mod tests {
             fwd.sort_by_key(|&i| keys[i as usize]);
             let perm = Perm::from_fwd(fwd).unwrap();
             prop_assert_eq!(s.cholesky_nnz(&perm).unwrap(), cholesky_nnz_dense(&s, &perm));
+        }
+
+        /// (P4): Algorithm P keeps `nnz(L)` and returns a postorder of the
+        /// elimination tree with the heaviest child of every node right
+        /// before it.
+        #[test]
+        fn etree_postorder_keeps_the_fill(
+            n in 1_usize..25,
+            e in prop::collection::vec((0_usize..25, 0_usize..25), 0..80),
+            keys in prop::collection::vec(any::<u32>(), 25),
+        ) {
+            let s = pattern_of(n, n, &e).symmetric().unwrap();
+            let mut fwd: Vec<u32> = (0..n).map(idx32).collect();
+            fwd.sort_by_key(|&i| keys[i as usize]);
+            let perm = Perm::from_fwd(fwd).unwrap();
+            let post = s.etree_postorder(&perm);
+            prop_assert_eq!(post.check_invariants(), Ok(()));
+            prop_assert_eq!(s.cholesky_nnz(&post).unwrap(), s.cholesky_nnz(&perm).unwrap());
+            let (parent, counts) = etree_counts(&s, &post);
+            // Postorder: a node follows its children, and every subtree is
+            // a contiguous run ending at its root.
+            let mut size = vec![1_usize; n];
+            for k in 0..n {
+                if parent[k] != usize::MAX {
+                    prop_assert!(parent[k] > k);
+                    size[parent[k]] += size[k];
+                }
+            }
+            for (k, &p) in parent.iter().enumerate() {
+                if p != usize::MAX {
+                    // Contiguity: the subtree of p is p − size(p) + 1 ..= p.
+                    prop_assert!(k + size[p] > p);
+                }
+            }
+            // Heaviest child last: the child right before a parent with
+            // children has the largest count among its siblings.
+            for p in 0..n {
+                let kids: Vec<usize> = (0..n).filter(|&k| parent[k] == p).collect();
+                if let Some(&last) = kids.iter().max() {
+                    prop_assert_eq!(last + 1, p);
+                    let heaviest = kids.iter().map(|&k| counts[k]).max().unwrap();
+                    prop_assert_eq!(counts[last], heaviest);
+                }
+            }
         }
     }
 }

@@ -1188,6 +1188,7 @@ fn assert_factor_matches(f: &mut LuF64, basis: &[ColumnRef], a: &CscMatrix, rng:
 fn pre_order_defaults_to_none() {
     let f = LuF64::default();
     assert_eq!(f.pre_order(), None);
+    assert_eq!(f.refactor_pivot_tol(), None);
     assert!(f.symbolic().is_none());
     assert_eq!(f.stats().symbolic_reuses + f.stats().symbolic_fallbacks, 0);
 }
@@ -1220,10 +1221,14 @@ proptest! {
     /// Forrest–Tomlin updates work on a refactorized factor.
     #[test]
     fn refactorization_reuses_the_sequence(m in 1_usize..40, kind in 0_usize..4, pre in any::<bool>(),
-                                            rho in 0.0_f64..0.5, seed in any::<u64>()) {
+                                            rho in 0.0_f64..0.5, loose in any::<bool>(), seed in any::<u64>()) {
         let mut rng = Rng::new(seed);
         let (a, basis) = gen_basis(&mut rng, m, shape_of(kind), 4);
         let mut f = if pre { colamd_lu() } else { LuF64::default() };
+        // A looser replay threshold (step R5) keeps every factor valid.
+        if loose {
+            f.set_refactor_pivot_tol(Some(1e-3));
+        }
         fz(&mut f, &basis, &a).unwrap();
         let sym = f.symbolic().unwrap().clone();
         f.refactorize_same_pattern(&(&basis[..], &a)).unwrap();
@@ -1298,4 +1303,11 @@ fn refactorization_falls_back() {
     let e = f.refactorize_same_pattern(&(&dep[..], &a4)).unwrap_err();
     assert!(matches!(e, LuError::Singular { .. }));
     assert!(f.symbolic().is_none() && !f.is_valid());
+}
+
+/// [`Lu::set_refactor_pivot_tol`] refuses a threshold outside `(0, 1]`.
+#[test]
+#[should_panic(expected = "outside (0, 1]")]
+fn refactor_pivot_tol_is_checked() {
+    LuF64::default().set_refactor_pivot_tol(Some(0.0));
 }

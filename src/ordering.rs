@@ -209,6 +209,32 @@ fn adjacency(g: &Pattern) -> Vec<Vec<u32>> {
         .collect()
 }
 
+/// The off-diagonal adjacency of `S + Sᵀ` for a square `S` (Algorithm S of
+/// Chapter 5.9 straight into the lists the engine takes: one transpose
+/// and one merge per column, no intermediate pattern).
+fn sym_adjacency(s: &Pattern) -> Vec<Vec<u32>> {
+    let t = s.transpose();
+    (0..s.n_cols())
+        .map(|j| {
+            let (a, b) = (s.col(j), t.col(j));
+            let jj = idx32(j);
+            let mut out = Vec::with_capacity(a.len() + b.len());
+            let (mut p, mut q) = (0, 0);
+            while p < a.len() && q < b.len() {
+                let (x, y) = (a[p], b[q]);
+                let next = x.min(y);
+                p += usize::from(x == next);
+                q += usize::from(y == next);
+                if next != jj {
+                    out.push(next);
+                }
+            }
+            out.extend(a[p..].iter().chain(&b[q..]).copied().filter(|&i| i != jj));
+            out
+        })
+        .collect()
+}
+
 /// `fwd` = `ordered`, then the excluded indices of each group in order.
 fn finish(n: usize, mut fwd: Vec<u32>, groups: &[&[bool]]) -> Perm {
     for g in groups {
@@ -238,15 +264,14 @@ impl Ordering for Amd {
     fn order(&self, pattern: &Pattern, target: OrderingTarget) -> Result<Perm, SparseError> {
         pattern.check_invariants()?;
         // A1.
-        let g = match target {
+        let adj = match target {
             OrderingTarget::Symmetric => {
                 square(pattern)?;
-                pattern.symmetric()?
+                sym_adjacency(pattern)
             }
-            OrderingTarget::Columns => pattern.ata(),
+            OrderingTarget::Columns => adjacency(&pattern.ata()),
         };
-        let n = g.n_cols();
-        let adj = adjacency(&g);
+        let n = adj.len();
         // A2.
         let delta = dense_threshold(self.dense, n);
         let excluded: Vec<bool> = adj.iter().map(|a| a.len() > delta).collect();
@@ -577,6 +602,20 @@ mod tests {
         assert_eq!(dense_threshold(None, 100), 100);
         assert_eq!(dense_threshold(Some(1.0), 4), DENSE_MIN);
         assert_eq!(dense_threshold(Some(-1.0), 4), usize::MAX);
+    }
+
+    /// A path long enough that the flag of step Q4 (`n + 1` per pivot, in
+    /// `u32`) restarts (Chapter 5.11, "Constant factors"): the order is
+    /// still perfect (`nnz(L) = 2n − 1`).
+    #[test]
+    fn long_path_restarts_the_flag_and_stays_perfect() {
+        let n = 100_000;
+        let edges: Vec<(usize, usize)> = (1..n).map(|i| (i, i - 1)).collect();
+        let s = pat(n, n, &edges).symmetric().unwrap();
+        for o in [&Amd::default() as &dyn Ordering, &Colamd::default()] {
+            let p = o.order(&s, OrderingTarget::Symmetric).unwrap();
+            assert_eq!(s.cholesky_nnz(&p).unwrap(), 2 * n - 1, "{}", o.name());
+        }
     }
 
     /// Example 5.10.1: the arrowhead with its hub first fills completely

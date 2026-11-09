@@ -25,13 +25,30 @@
 //!     (invariant (K1) of Chapter 5.14; [`KktError::NotSymmetric`] or
 //!     [`KktError::Structure`] otherwise).
 //! A2. `π ←` `ordering.order(L₀ + L₀ᵀ, Symmetric)`.
+//! A2′. `π ←` the postorder of the elimination tree of `π`, heaviest
+//!     child last (Algorithm P of Chapter 5.9): the same `nnz(L)`, but
+//!     subtrees contiguous and the largest front next to its parent —
+//!     the one child faer's relaxed supernodal amalgamation can merge.
+//!     Whatever the ordering's own output convention (the assembly tree of
+//!     our [`crate::Amd`], the pivot order of [`crate::Colamd`], a caller's
+//!     permutation), the supernodes faer builds are then as good as the
+//!     elimination tree allows (task L1.5b: maros-r7's augmented system
+//!     factorized 11× slower without this step, with the same
+//!     `nnz(L)`).
 //! A3. faer's symbolic Cholesky of `L₀` under the custom permutation `π`:
 //!     elimination tree, column counts, and the simplicial or supernodal
 //!     structure of `L` (threshold from [`FaerLdl::supernodal`]).
+//! A4. The pattern of `P L₀ Pᵀ` in the triangle faer's numeric phase reads
+//!     (upper for the simplicial structure, lower for the supernodal one),
+//!     with the position of every entry of `L₀` in it: each factorization
+//!     then permutes its values by a scatter, and calls faer's
+//!     *structure-level* numeric phase, which reports how many pivots it
+//!     bumped (the top-level one does not; task L1.5b).
 //!
 //! ## Algorithm N (Numeric factorization)
-//! N1. `v ←` the values of `K_reg` on `L₀` (step K2 of Chapter 5.14),
-//!     equilibrated to `K̃ = S K_reg S` (step K2′).
+//! N1. `v ←` the values of `K` on `L₀` (steps K1′–K2 of Chapter 5.14),
+//!     equilibrated to `K̃ = S K S` (step K2′), plus the static shifts
+//!     (step K2″): `v` holds `K̃_reg`.
 //! N2. Choose the kernel:
 //!     * **`LDLᵀ`** (diagonal `Δ`, no pivoting) for the normal equations,
 //!       for an augmented system that is quasi-definite (`ρ, δ > 0`), and
@@ -49,8 +66,15 @@
 //! N3. Read the pivots — the diagonal of `Δ` (first entry of each column
 //!     of the simplicial `L`; diagonal of each supernode's dense block),
 //!     plus the subdiagonal of `B` for the `2×2` blocks of `LBLᵀ` — and
-//!     count the inertia (step K4); count the bumped pivots (`|d_k| = β`
-//!     exactly; faer's own counter misses the negative ones).
+//!     count the inertia (step K4). The bumped pivots of step K3: faer's
+//!     count, exact for the simplicial structure; its supernodal kernel
+//!     counts only the positive-sign pivots it bumps, so a negative-sign
+//!     pivot equal to `−β` exactly is added — the one count by value left
+//!     (it can only overcount, by a pivot that happens to equal `−β` bit
+//!     for bit).
+//! N3′. (S10): if a stored value of the factor (or of the subdiagonal of
+//!     `B`) is not finite, fail with [`KktError::NotFinite`] at the
+//!     original row `fwd[k]` of the first such column `k`.
 //! N4. (S6): fail with [`KktError::WrongInertia`] unless the inertia is the
 //!     one the form requires.
 //!
@@ -59,7 +83,16 @@
 //! on `K̃`, then `x ← S x` (the factor is of `K̃ = S K_reg S`; and the
 //! intranodal permutation and `2×2` blocks for `LBLᵀ`), sequentially
 //! (`Par::Seq`; faer is built without its `rayon` feature, so results do
-//! not depend on threads).
+//! not depend on threads). The solve allocates nothing: faer's stack
+//! memory for it is sized and allocated once, by the factorization, and
+//! kept in the [`FaerNumeric`] behind a mutex (a second thread solving
+//! with the same factor at the same moment gets a temporary buffer
+//! instead of waiting) — with [`KktSolver::solve_refined_with`] and a
+//! reused [`crate::RefineWorkspace`], a refined solve allocates nothing
+//! either. Measured in L1.5b with a counting allocator on the 186 Netlib
+//! systems of the middle regime: 0 allocations in a second solve and in
+//! a second refined solve with the same workspace (the first solve with a
+//! factor may make one, the lazy initialization of the mutex on macOS).
 //!
 //! ## Invariants
 //! (F1) The numeric factor shares the symbolic structure it was computed
@@ -85,7 +118,7 @@
 //! `sparse::linalg::cholesky`); Bunch & Kaufman (1977); Davis, *Direct
 //! Methods for Sparse Linear Systems* (2006), ch. 4 and 9.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::ldlt::factor::{LdltError, LdltRegularization};
@@ -93,14 +126,14 @@ use faer::perm::PermRef;
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::linalg::cholesky::{
     CholeskySymbolicParams, IntranodeLbltRef, LdltRef, SymbolicCholesky, SymbolicCholeskyRaw,
-    SymmetricOrdering, factorize_symbolic_cholesky,
+    SymmetricOrdering, factorize_symbolic_cholesky, simplicial, supernodal,
 };
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side, Spec};
 
 use crate::kkt::{
-    assemble_regularized, check_inertia, check_regularization, count_inertia,
-    equilibrate_symmetric, lower_with_diagonal, pivot_signs,
+    assemble_regularized, check_inertia, check_regularization, count_inertia, lower_with_diagonal,
+    pivot_signs,
 };
 use crate::real::{Real, approx_eq, is_exact_zero};
 use crate::{
@@ -132,12 +165,15 @@ use crate::{
 /// let sym = solver.analyze(&normal([1.0; 3]).pattern(), form, &Amd::default()).unwrap();
 /// for d in [[1.0, 2.0, 3.0], [1e-6, 1e4, 1e-3]] {
 ///     let k = normal(d);
-///     let (num, inertia) = solver.factorize(&sym, &k, Regularization::relative_to(&k, 1e-8)).unwrap();
+///     // δ is taken in the equilibrated matrix (the default).
+///     let (num, inertia) = solver.factorize(&sym, &k, Regularization::default()).unwrap();
 ///     assert_eq!(inertia.positive, 2);
 ///     let (b, mut x) = ([1.0, -1.0], [0.0; 2]);
-///     // Refining against k itself removes the bias of the shift δ.
+///     // Refining against k itself removes the bias of the shift δ, down to
+///     // the rounding floor ε‖K‖‖x‖ of the computed residual (≈ 10⁻⁸ for
+///     // the second D, whose K has condition ≈ 10⁷).
 ///     let report = solver.solve_refined(&num, &k, &b, &mut x, Refinement::default());
-///     assert!(report.converged);
+///     assert!(report.residual <= 1e-8);
 /// }
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,11 +193,57 @@ pub struct FaerSymbolic {
     row_idx: Vec<usize>,
     perm: Perm,
     faer: Arc<SymbolicCholesky<usize>>,
+    /// `P L₀ Pᵀ` in the triangle faer's numeric phase reads (upper for the
+    /// simplicial structure, lower for the supernodal one), with the
+    /// position of every entry of `L₀` in it (step A4).
+    permuted: Permuted,
+}
+
+/// Step A4: the permuted pattern and the scatter map.
+#[derive(Debug)]
+struct Permuted {
+    col_ptr: Vec<usize>,
+    row_idx: Vec<usize>,
+    /// `map[p]` = the position in `row_idx` of entry `p` of `L₀`.
+    map: Vec<usize>,
+}
+
+/// Step A4 on `L₀` (lower, full diagonal) under `perm`: the upper
+/// (`upper = true`) or lower triangle of `P L₀ Pᵀ`, columns sorted.
+fn permute_lower(lower: &Pattern, perm: &Perm, upper: bool) -> Permuted {
+    let n = lower.n_cols();
+    let nnz = lower.nnz();
+    let mut entries: Vec<(usize, usize, usize)> = Vec::with_capacity(nnz);
+    for j in 0..n {
+        for (q, &i) in lower.col(j).iter().enumerate() {
+            let (a, b) = (perm.inv[i as usize] as usize, perm.inv[j] as usize);
+            let (hi, lo) = (a.max(b), a.min(b));
+            let (col, row) = if upper { (hi, lo) } else { (lo, hi) };
+            entries.push((col, row, lower.col_ptr[j] + q));
+        }
+    }
+    entries.sort_unstable();
+    let mut col_ptr = vec![0_usize; n + 1];
+    let mut row_idx = Vec::with_capacity(nnz);
+    let mut map = vec![0_usize; nnz];
+    for (pos, &(col, row, p)) in entries.iter().enumerate() {
+        col_ptr[col + 1] += 1;
+        row_idx.push(row);
+        map[p] = pos;
+    }
+    for c in 0..n {
+        col_ptr[c + 1] += col_ptr[c];
+    }
+    Permuted {
+        col_ptr,
+        row_idx,
+        map,
+    }
 }
 
 impl FaerSymbolic {
     /// The fill-reducing permutation used (`fwd[k]` = row eliminated
-    /// `k`-th).
+    /// `k`-th): the ordering's, postordered (step A2′).
     pub fn perm(&self) -> &Perm {
         &self.perm
     }
@@ -194,6 +276,18 @@ pub struct FaerNumeric<T: Real> {
     bumped: usize,
     /// `s` of step K2′ (powers of two).
     scale: Vec<T>,
+    /// faer's stack memory for the solves (Algorithm S).
+    scratch: SolveScratch,
+}
+
+/// faer's stack memory for [`KktSolver::solve`], allocated by the
+/// factorization; a mutex so that a shared factor stays `Sync`.
+struct SolveScratch(Mutex<MemBuffer>);
+
+impl std::fmt::Debug for SolveScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SolveScratch")
+    }
 }
 
 #[derive(Debug)]
@@ -257,6 +351,25 @@ fn pivots(sym: &SymbolicCholesky<usize>, values: &[f64]) -> Vec<f64> {
     }
 }
 
+/// Step N3′: the first column (pivot order) of the factor holding a NaN
+/// or an infinity, if any.
+fn first_non_finite(sym: &SymbolicCholesky<usize>, values: &[f64]) -> Option<usize> {
+    let p = values.iter().position(|x| !x.is_finite())?;
+    Some(match sym.raw() {
+        SymbolicCholeskyRaw::Simplicial(s) => {
+            // The column whose range holds p.
+            s.col_ptr().partition_point(|&c| c <= p) - 1
+        }
+        SymbolicCholeskyRaw::Supernodal(s) => {
+            let ptr = s.col_ptr_for_val();
+            let t = ptr.partition_point(|&c| c <= p) - 1;
+            let ncols = s.supernode_end()[t] - s.supernode_begin()[t];
+            let nrows = s.nnz_per_super()[t] + ncols;
+            s.supernode_begin()[t] + (p - ptr[t]) / nrows
+        }
+    })
+}
+
 /// Step N2, Bunch–Kaufman path: faer's intranodal `LBLᵀ`; returns the
 /// pivot data, the `1×1` pivots and the `2×2` blocks (step N3).
 #[allow(clippy::type_complexity)]
@@ -315,7 +428,8 @@ impl KktSolver<f64> for FaerLdl {
         let lower = lower_with_diagonal(pattern, form)?;
         let n = lower.n_cols();
         // A2.
-        let perm = ordering.order(&lower.symmetric()?, OrderingTarget::Symmetric)?;
+        let full = lower.symmetric()?;
+        let perm = ordering.order(&full, OrderingTarget::Symmetric)?;
         if perm.len() != n {
             return Err(KktError::Structure(SparseError::Dimension {
                 what: "ordering length",
@@ -323,6 +437,8 @@ impl KktSolver<f64> for FaerLdl {
                 found: perm.len(),
             }));
         }
+        // A2′.
+        let perm = full.etree_postorder(&perm);
         // A3.
         let row_idx: Vec<usize> = lower.row_idx.iter().map(|&i| i as usize).collect();
         let fwd: Vec<usize> = perm.fwd.iter().map(|&i| i as usize).collect();
@@ -344,15 +460,20 @@ impl KktSolver<f64> for FaerLdl {
             params,
         )
         .map_err(faer_error)?;
+        // A4.
+        let upper = matches!(faer.raw(), SymbolicCholeskyRaw::Simplicial(_));
+        let permuted = permute_lower(&lower, &perm, upper);
         Ok(FaerSymbolic {
             form,
             lower,
             row_idx,
             perm,
             faer: Arc::new(faer),
+            permuted,
         })
     }
 
+    #[allow(clippy::too_many_lines)] // steps N1–N4 in order, as in the chapter
     fn factorize(
         &self,
         symbolic: &FaerSymbolic,
@@ -364,8 +485,7 @@ impl KktSolver<f64> for FaerLdl {
         let n = symbolic.lower.n_cols();
         check_regularization(&reg)?;
         // N1.
-        let mut v = assemble_regularized(&symbolic.lower, form, k, &reg)?;
-        let scale = equilibrate_symmetric(&symbolic.lower, &mut v);
+        let (v, scale) = assemble_regularized(&symbolic.lower, form, k, &reg)?;
         let a = SparseColMatRef::new(
             SymbolicSparseColMatRef::new_checked(
                 n,
@@ -383,30 +503,69 @@ impl KktSolver<f64> for FaerLdl {
             && !reg.is_quasi_definite()
             && reg.pivot_tol.is_none()
             && supernodal;
-        let (lblt, d, twos) = if use_lblt {
+        let (lblt, d, twos, faer_bumps) = if use_lblt {
             let (lblt, ones, twos) = factor_lblt(sym, a, &mut values)?;
-            (Some(lblt), ones, twos)
+            (Some(lblt), ones, twos, 0)
         } else {
+            // The signs in pivot order, and K̃_reg permuted by the map of
+            // step A4: faer's lower-level numeric phases, which report the
+            // count of bumped pivots (step N3).
             let signs = pivot_signs(form, n);
+            let fwd = &symbolic.perm.fwd;
+            let signs: Vec<i8> = (0..n).map(|k| signs[fwd[k] as usize]).collect();
+            let pm = &symbolic.permuted;
+            let mut pv = vec![0.0_f64; v.len()];
+            for (&dst, &x) in pm.map.iter().zip(&v) {
+                pv[dst] = x;
+            }
+            let a_perm = SparseColMatRef::new(
+                SymbolicSparseColMatRef::new_checked(n, n, &pm.col_ptr, None, &pm.row_idx),
+                &pv,
+            );
             let regularization = LdltRegularization {
                 dynamic_regularization_signs: reg.pivot_tol.map(|_| signs.as_slice()),
                 dynamic_regularization_delta: reg.bump,
                 dynamic_regularization_epsilon: reg.pivot_tol.unwrap_or(0.0),
             };
-            let mut buf = MemBuffer::try_new(
-                sym.factorize_numeric_ldlt_scratch::<f64>(Par::Seq, Spec::default()),
-            )
-            .map_err(|_| KktError::Backend("faer: out of memory"))?;
-            match sym.factorize_numeric_ldlt(
-                &mut values,
-                a,
-                Side::Lower,
-                regularization,
-                Par::Seq,
-                MemStack::new(&mut buf),
-                Spec::default(),
-            ) {
-                Ok(_) => {}
+            let req = match sym.raw() {
+                SymbolicCholeskyRaw::Simplicial(_) => {
+                    simplicial::factorize_simplicial_numeric_ldlt_scratch::<usize, f64>(n)
+                }
+                SymbolicCholeskyRaw::Supernodal(s) => {
+                    supernodal::factorize_supernodal_numeric_ldlt_scratch::<usize, f64>(
+                        s,
+                        Par::Seq,
+                        Spec::default(),
+                    )
+                }
+            };
+            let mut buf =
+                MemBuffer::try_new(req).map_err(|_| KktError::Backend("faer: out of memory"))?;
+            let stack = MemStack::new(&mut buf);
+            let result = match sym.raw() {
+                SymbolicCholeskyRaw::Simplicial(s) => {
+                    simplicial::factorize_simplicial_numeric_ldlt(
+                        &mut values,
+                        a_perm,
+                        regularization,
+                        s,
+                        stack,
+                    )
+                }
+                SymbolicCholeskyRaw::Supernodal(s) => {
+                    supernodal::factorize_supernodal_numeric_ldlt(
+                        &mut values,
+                        a_perm,
+                        regularization,
+                        s,
+                        Par::Seq,
+                        stack,
+                        Spec::default(),
+                    )
+                }
+            };
+            let bumps = match result {
+                Ok(info) => info.dynamic_regularization_count,
                 Err(LdltError::ZeroPivot { index }) => {
                     // faer 0.24 reports the simplicial pivot one-based and
                     // the supernodal one zero-based.
@@ -415,17 +574,33 @@ impl KktSolver<f64> for FaerLdl {
                         position: symbolic.perm.fwd[k] as usize,
                     });
                 }
-            }
-            (None, pivots(sym, &values), Vec::new())
+            };
+            let d = pivots(sym, &values);
+            // faer's supernodal kernel counts only the bumps of the
+            // positive-sign pivots; a bumped negative-sign pivot is −β
+            // exactly (step N3).
+            let extra = if supernodal && reg.pivot_tol.is_some() {
+                d.iter()
+                    .zip(&signs)
+                    .filter(|&(&x, &sg)| sg < 0 && approx_eq(x, -reg.bump, 0.0))
+                    .count()
+            } else {
+                0
+            };
+            (None, d, Vec::new(), bumps + extra)
         };
+        // N3′ (step K3′, (S10)).
+        let bad = first_non_finite(sym, &values).or_else(|| {
+            lblt.as_ref()
+                .and_then(|b| b.subdiag.iter().position(|x| !x.is_finite()))
+        });
+        if let Some(k) = bad {
+            return Err(KktError::NotFinite {
+                position: symbolic.perm.fwd[k] as usize,
+            });
+        }
         // N3.
-        let bumped = if reg.pivot_tol.is_some() {
-            d.iter()
-                .filter(|x| approx_eq(x.abs(), reg.bump, 0.0))
-                .count()
-        } else {
-            0
-        };
+        let bumped = faer_bumps;
         let found = count_inertia(d.into_iter(), twos.into_iter());
         // N4 (S6).
         let inertia = check_inertia(found, form.expected_inertia(n))?;
@@ -438,6 +613,10 @@ impl KktSolver<f64> for FaerLdl {
                 inertia,
                 bumped,
                 scale,
+                scratch: SolveScratch(Mutex::new(
+                    MemBuffer::try_new(sym.solve_in_place_scratch::<f64>(1, Par::Seq))
+                        .map_err(|_| KktError::Backend("faer: out of memory"))?,
+                )),
             },
             inertia,
         ))
@@ -450,8 +629,16 @@ impl KktSolver<f64> for FaerLdl {
         for (xi, &si) in x.iter_mut().zip(&numeric.scale) {
             *xi *= si;
         }
-        let mut buf = MemBuffer::new(sym.solve_in_place_scratch::<f64>(1, Par::Seq));
-        let stack = MemStack::new(&mut buf);
+        // The factor's own scratch; a temporary one only if another thread
+        // holds it (or a panic poisoned it).
+        let mut held = numeric.scratch.0.try_lock().ok();
+        let mut temp;
+        let stack = if let Some(buf) = held.as_deref_mut() {
+            MemStack::new(buf)
+        } else {
+            temp = MemBuffer::new(sym.solve_in_place_scratch::<f64>(1, Par::Seq));
+            MemStack::new(&mut temp)
+        };
         let rhs = MatMut::from_column_major_slice_mut(x, n, 1);
         match &numeric.lblt {
             None => LdltRef::new(sym, &numeric.values).solve_in_place_with_conj(
@@ -486,7 +673,7 @@ impl KktSolver<f64> for FaerLdl {
 mod tests {
     use super::*;
     use crate::real::le;
-    use crate::{Amd, Col, Natural, Refinement, Row};
+    use crate::{Amd, Col, Natural, Refinement, Row, ShiftScale};
     use proptest::prelude::*;
 
     /// xorshift in `[0, 1)`.
@@ -567,33 +754,9 @@ mod tests {
         (0..n).map(|_| 2.0 * r.unit() - 1.0).collect()
     }
 
-    /// `K_reg = K + diag(−ρ I, δ I)` (lower triangle), the system the
-    /// criterion of L1.5 solves.
-    fn shifted(k: &CscMatrix, form: KktForm, reg: &Regularization) -> CscMatrix {
-        let n = k.n_rows;
-        let mut t: Vec<(Row, Col, f64)> = Vec::new();
-        for j in 0..n {
-            let (rows, vals) = k.col(Col::from_usize(j));
-            for (&i, &v) in rows.iter().zip(vals) {
-                t.push((Row(i), Col::from_usize(j), v));
-            }
-            let shift = match form {
-                KktForm::NormalEquations => reg.dual,
-                KktForm::Augmented { n_primal, .. } => {
-                    if j < n_primal {
-                        -reg.primal
-                    } else {
-                        reg.dual
-                    }
-                }
-            };
-            t.push((Row::from_usize(j), Col::from_usize(j), shift));
-        }
-        CscMatrix::from_triplets(n, n, &t).unwrap()
-    }
-
-    /// Factorizes `k` with `reg` and refines against `K_reg`, with the
-    /// right-hand side `K_reg x*` for `x* = b`.
+    /// Factorizes `k` with `reg` and refines against the unregularized
+    /// `K` (the measure of L1.5b), with the right-hand side `K x*` for
+    /// `x* = b`.
     fn solve_ok(
         k: &CscMatrix,
         form: KktForm,
@@ -604,13 +767,12 @@ mod tests {
         let s = FaerLdl { supernodal };
         let sym = s.analyze(&k.pattern(), form, &Amd::default()).unwrap();
         let (num, inertia) = s.factorize(&sym, k, reg).unwrap();
-        let kr = shifted(k, form, &reg);
-        // A manufactured solution: b = K_reg x*, as the right-hand sides of
-        // an interior-point method scale with K.
+        // A manufactured solution: b = K x*, as the right-hand sides of an
+        // interior-point method scale with K.
         let mut rhs = vec![0.0; b.len()];
-        crate::kkt::sym_lower_matvec(&kr, b, &mut rhs);
+        crate::kkt::sym_lower_matvec(k, b, &mut rhs);
         let mut x = vec![0.0; b.len()];
-        let rep = s.solve_refined(&num, &kr, &rhs, &mut x, Refinement::default());
+        let rep = s.solve_refined(&num, k, &rhs, &mut x, Refinement::default());
         (inertia, rep.residual, num.bumped())
     }
 
@@ -721,6 +883,7 @@ mod tests {
             dual: 0.0,
             pivot_tol: Some(1e-13),
             bump: 1e-8,
+            scale: ShiftScale::Equilibrated,
         };
         let (num, inertia) = s.factorize(&sym, &ind, reg).unwrap();
         assert_eq!(inertia.positive, 2);
@@ -730,6 +893,148 @@ mod tests {
         let sym = s.analyze(&aug.pattern(), form, &Natural).unwrap();
         let (num, _) = s.factorize(&sym, &aug, Regularization::default()).unwrap();
         assert_eq!(num.bumped(), 0);
+    }
+
+    #[test]
+    fn s10_overflow_is_an_error_and_non_finite_input_is_refused() {
+        // Pivots bumped to a tiny β make L overflow (step K3′).
+        let t = |v: f64| {
+            CscMatrix::from_triplets(
+                3,
+                3,
+                &[
+                    (Row(0), Col(0), v),
+                    (Row(1), Col(0), 1.0),
+                    (Row(2), Col(0), 1.0),
+                    (Row(1), Col(1), 1.0),
+                    (Row(2), Col(1), 1.0),
+                    (Row(2), Col(2), 1.0),
+                ],
+            )
+            .unwrap()
+        };
+        let k = t(1e-310);
+        let reg = Regularization {
+            primal: 0.0,
+            dual: 0.0,
+            pivot_tol: Some(1e-300),
+            bump: 1e-300,
+            scale: ShiftScale::Equilibrated,
+        };
+        for sn in [Some(false), Some(true)] {
+            let s = FaerLdl { supernodal: sn };
+            let sym = s
+                .analyze(&k.pattern(), KktForm::NormalEquations, &Natural)
+                .unwrap();
+            assert!(
+                matches!(
+                    s.factorize(&sym, &k, reg),
+                    Err(KktError::NotFinite { .. } | KktError::ZeroPivot { .. })
+                ),
+                "{sn:?}"
+            );
+            // A NaN in K never reaches the factorization (step K1′).
+            let mut nan = t(1.0);
+            nan.val[0] = f64::NAN;
+            assert!(matches!(
+                s.factorize(&sym, &nan, Regularization::default()),
+                Err(KktError::Structure(_))
+            ));
+        }
+        let s = FaerLdl {
+            supernodal: Some(false),
+        };
+        let sym = s
+            .analyze(&k.pattern(), KktForm::NormalEquations, &Natural)
+            .unwrap();
+        assert!(matches!(
+            s.factorize(&sym, &k, reg),
+            Err(KktError::NotFinite { position: 1 | 2 })
+        ));
+    }
+
+    #[test]
+    fn gmres_refinement_removes_the_shift_on_a_nearly_singular_system() {
+        // A D Aᵀ with two nearly parallel rows of A: λ_min ≈ 10⁻¹² ≪ δ, where
+        // the classical iteration x ← x + F⁻¹ r contracts by δ/(λ + δ) ≈ 1
+        // per step; GMRES (Algorithm F) converges in a few.
+        let a = [
+            [1.0, 2.0, 0.0, 1.0],
+            [1.0, 2.0, 1e-6, 1.0],
+            [0.0, 1.0, 1.0, 3.0],
+        ];
+        let mut t = Vec::new();
+        for i in 0..3 {
+            for p in 0..=i {
+                let v: f64 = (0..4).map(|j| a[i][j] * a[p][j]).sum();
+                t.push((Row::from_usize(i), Col::from_usize(p), v));
+            }
+        }
+        let k = CscMatrix::from_triplets(3, 3, &t).unwrap();
+        let s = FaerLdl::default();
+        let sym = s
+            .analyze(&k.pattern(), KktForm::NormalEquations, &Amd::default())
+            .unwrap();
+        let (num, _) = s.factorize(&sym, &k, Regularization::default()).unwrap();
+        let xs = [1.0, -1.0, 0.5];
+        let mut b = vec![0.0; 3];
+        crate::kkt::sym_lower_matvec(&k, &xs, &mut b);
+        let mut x = vec![0.0; 3];
+        let first = s.solve_refined(
+            &num,
+            &k,
+            &b,
+            &mut x,
+            Refinement {
+                max_iters: 0,
+                target_residual: 0.0,
+            },
+        );
+        let rep = s.solve_refined(&num, &k, &b, &mut x, Refinement::default());
+        assert!(rep.converged && rep.iters <= 4, "{first:?} → {rep:?}");
+        assert!(le(rep.residual, first.residual, 0.0));
+    }
+
+    #[test]
+    fn bumps_are_counted_with_both_signs_and_both_structures() {
+        // K = [0 1; 1 0], one primal and one dual unknown, no static
+        // shift: the primal pivot 0 is bumped to −β (a negative-sign bump),
+        // the dual one is then 1/β > 0.
+        let k = CscMatrix::from_triplets(2, 2, &[(Row(1), Col(0), 1.0)]).unwrap();
+        let form = KktForm::Augmented {
+            n_primal: 1,
+            n_dual: 1,
+        };
+        let reg = Regularization {
+            primal: 0.0,
+            dual: 0.0,
+            pivot_tol: Some(1e-13),
+            bump: 1e-8,
+            scale: ShiftScale::Equilibrated,
+        };
+        // A normal-equations matrix with a zero pivot: a positive-sign bump.
+        let z = CscMatrix::from_triplets(
+            3,
+            3,
+            &[
+                (Row(0), Col(0), 1.0),
+                (Row(2), Col(0), 1.0),
+                (Row(2), Col(2), 1.0),
+            ],
+        )
+        .unwrap();
+        for sn in [Some(false), Some(true)] {
+            let s = FaerLdl { supernodal: sn };
+            let sym = s.analyze(&k.pattern(), form, &Natural).unwrap();
+            let (num, inertia) = s.factorize(&sym, &k, reg).unwrap();
+            assert_eq!(inertia, form.expected_inertia(2));
+            assert_eq!(num.bumped(), 1, "{sn:?}");
+            let sym = s
+                .analyze(&z.pattern(), KktForm::NormalEquations, &Natural)
+                .unwrap();
+            let (num, _) = s.factorize(&sym, &z, reg).unwrap();
+            assert_eq!(num.bumped(), 2, "{sn:?}"); // pivots 1 (zero row) and 2 (1 − 1 = 0)
+        }
     }
 
     #[test]
@@ -810,6 +1115,7 @@ mod tests {
             dual: 10.0,
             pivot_tol: None,
             bump: 0.0,
+            scale: ShiftScale::Absolute,
         };
         let (num, _) = s.factorize(&sym, &aug, far).unwrap();
         let mut x = vec![0.0; 28];

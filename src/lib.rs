@@ -83,9 +83,9 @@
 //! | `Pattern`, `Perm`, `CscMatrix::{pattern, symmetric_pattern}` | [`Pattern`] (+ `transpose`, `symmetric`, `ata`, `cholesky_nnz`), [`Perm`] (L1.3) |
 //! | `Ordering`, `OrderingTarget`, `Natural`, `Amd`, `Colamd` | the same (L1.3; `Amd::default()` has aggressive absorption on) |
 //! | `PreOrder`, `LuOptions::pre_order`, `SymbolicLu`, `LuStats::symbolic_reuses` | [`PreOrder`], `Lu::{set_pre_order, pre_order}` (not an `LuOptions` field: see [`Lu::set_pre_order`]), [`SymbolicLu`] (+ `singletons`), `LuStats::{symbolic_reuses, symbolic_fallbacks}` (L1.3) |
-//! | `LuFactor::{refactorize_same_pattern, symbolic}` | the same (L1.3)                       |
+//! | `LuFactor::{refactorize_same_pattern, symbolic}` | the same (L1.3); the replay threshold `Lu::{set_refactor_pivot_tol, refactor_pivot_tol}` (L1.5b, default = `rel_pivot_tol`) |
 //! | `Equilibration`, `Scaling<T>` | [`Equilibration`], [`Scaling`] (+ `check_invariants`; §5.13, L1.5) |
-//! | `Inertia`, `Regularization<T>`, `Refinement<T>`, `RefineReport<T>`, `KktForm`, `KktSolver<T>`, `KktError` | the same (§5.14, L1.5), plus `Default` for the option structs, `Regularization::{none, relative_to, is_quasi_definite}`, `KktForm::expected_inertia`, `KktError::Structure`, [`EQUILIBRATION_PASSES`]; the augmented inertia reads `{positive: m, negative: n}` |
+//! | `Inertia`, `Regularization<T>`, `Refinement<T>`, `RefineReport<T>`, `KktForm`, `KktSolver<T>`, `KktError` | the same (§5.14, L1.5), plus `Default` for the option structs, `Regularization::{none, relative_to, is_quasi_definite}`, `KktForm::expected_inertia`, `KktError::Structure`, [`EQUILIBRATION_PASSES`]; the augmented inertia reads `{positive: m, negative: n}`; L1.5b: `Regularization::scale` with [`ShiftScale`] (shifts in the equilibrated matrix by default), `KktError::NotFinite`, [`RefineWorkspace`] and `KktSolver::solve_refined_with`, refinement by GMRES |
 //! | `FaerLdl`, `FaerSymbolic`, `FaerNumeric<T>` (feature `faer`) | the same (§5.15, L1.5), plus read-only accessors |
 //! | `DenseBlock<T>`, `DenseKernel<T>`, `NaiveDense`, `FaerDense`, `DenseError` | the same (§5.16, L1.5); `sytrf` also returns its permutation and `2×2` marks |
 //!
@@ -110,6 +110,13 @@
 //!   ([`CscMatrix::from_triplets`] covers the builder today). The simplex
 //!   uses none of it, and faer is not in the solver's build: the workspace
 //!   depends on this crate without default features.
+//! * **L1.5b** (done) — before 0.1.0: a default regularization that holds
+//!   at the end of an interior-point method (shifts in the equilibrated
+//!   matrix, §5.14), refinement by right-preconditioned GMRES with
+//!   reusable work vectors, non-finite factors reported, solves without
+//!   allocation and exact bump counts (§5.15), the elimination-tree
+//!   postorder before faer's supernodes (§5.9, Algorithm P), a faster
+//!   Algorithm Q (§5.11), and the replay threshold of Algorithm R (§5.12).
 //! * **L1.6** — the own `SupernodalLdl<T, K>`, after the interior-point
 //!   method has measured faer.
 //!
@@ -237,7 +244,8 @@ pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder};
 pub use faer_ldl::{FaerLdl, FaerNumeric, FaerSymbolic};
 pub use index::{Col, Row};
 pub use kkt::{
-    EQUILIBRATION_PASSES, Inertia, KktForm, KktSolver, RefineReport, Refinement, Regularization,
+    EQUILIBRATION_PASSES, Inertia, KktForm, KktSolver, RefineReport, RefineWorkspace, Refinement,
+    Regularization, ShiftScale,
 };
 pub use ordering::{Amd, Colamd, Natural, Ordering, OrderingTarget};
 pub use perm::{Pattern, Perm};

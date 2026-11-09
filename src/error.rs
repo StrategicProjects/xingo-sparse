@@ -193,6 +193,14 @@ pub enum KktError {
         /// Row of `K`, in the caller's numbering.
         position: usize,
     },
+    /// The factorization produced a NaN or an infinity (an overflow of the
+    /// elimination; step K3′ and invariant (S10) of Chapter 5.14);
+    /// `position` is the row of `K` (original numbering) of the first
+    /// column of the factor holding one.
+    NotFinite {
+        /// Row of `K`, in the caller's numbering.
+        position: usize,
+    },
     /// The inertia of the factorization differs from the one the form
     /// requires (invariant (S6)).
     WrongInertia {
@@ -214,6 +222,9 @@ impl fmt::Display for KktError {
         match self {
             Self::NotSymmetric => write!(f, "the KKT pattern is not square and symmetric"),
             Self::ZeroPivot { position } => write!(f, "zero pivot at row {position}"),
+            Self::NotFinite { position } => {
+                write!(f, "non-finite factor (overflow) at row {position}")
+            }
             Self::WrongInertia { found, expected } => write!(
                 f,
                 "wrong inertia: found ({}, {}, {}), expected ({}, {}, {})",

@@ -58,9 +58,9 @@
 //!     entry `s_iq` of the Schur complement that Algorithm L would have
 //!     seen when pivoting column `q`.
 //! R5. [Test.] Let `γ = max_{i active} |x_i|`. If `|x_p| ≤ τ_abs`, or `s ≥ σ`
-//!     and `|x_p| < u γ` (Markowitz's threshold of Chapter 5.3; the
-//!     singleton steps keep the rule of L3–L4: forced pivots, no relative
-//!     test), fall back to Algorithm L.
+//!     and `|x_p| < u_R γ` (by default `u_R = u`, Markowitz's threshold of
+//!     Chapter 5.3; the singleton steps keep the rule of L3–L4: forced
+//!     pivots, no relative test), fall back to Algorithm L.
 //! R6. [Record.] `u_pq ← x_p`; for each pivoted `r ∈ X` with `|x_r| > ε_drop`
 //!     record `u_rq = x_r`; for each active `i ≠ p` with `|x_i| > ε_drop`
 //!     record `l_is = x_i / x_p` (the `L` column of step `s`, pivot row
@@ -74,9 +74,32 @@
 //!      with the same sequence `L U = P B Q` holds to rounding and (F1)–(F3)
 //!      of Chapter 5.3 hold (checked by `check_invariants` after step L7 in
 //!      debug builds and against the dense product in the tests).
-//! (R2) The threshold test of R5 is the one Algorithm L applies to its
-//!      bump pivots, so a sequence is replayed only when it would have been
-//!      acceptable to Algorithm L for these values.
+//! (R2) With the default `u_R = u`, the threshold test of R5 is the one
+//!      Algorithm L applies to its bump pivots, so a sequence is replayed
+//!      only when it would have been acceptable to Algorithm L for these
+//!      values. [`crate::Lu::set_refactor_pivot_tol`] may lower `u_R`
+//!      (never `u`, which Algorithm L keeps).
+//!
+//! ## The replay threshold (task L1.5b)
+//! A Markowitz search accepts the sparsest pivot that passes `u`, so many
+//! recorded pivots sit just above it: in L1.3, 30 of 109 bases (93 Netlib
+//! optimal bases and 16 unsymmetric Harwell–Boeing matrices), with every
+//! value perturbed by an independent ±1 %, fell back on the first replay.
+//! Measured in L1.5b on the same 109, first replay of `B₂` with the
+//! sequence of `B₁`:
+//!
+//! | `u_R` | fallbacks | replays with a residual > 10× the fresh one |
+//! |---|---|---|
+//! | `u = 10⁻²` (default) | 30 | 0 |
+//! | `5·10⁻³` | 19 | 0 |
+//! | `10⁻³` | 9 | 0 |
+//! | `10⁻⁴` | 2 | 2 (orsirr_1 ×43, degen3 ×290) |
+//!
+//! (residual `‖B x − b‖_∞ / (‖B‖_∞‖x‖_∞ + ‖b‖_∞)` for `b = B·1`). The
+//! default stays `u`, which keeps (R2); `u_R = u/10` is the measured
+//! compromise for a caller that replays sequences over drifting values
+//! (the simplex method does not replay yet: integration pending, D-0091
+//! (a)).
 //! (R3) A [`SymbolicLu`] is recorded after every successful factorization
 //!      (Algorithm L or R) and dropped after a failed one; its two arrays
 //!      are permutations of `0..m` (`debug_assert` in the tests).
@@ -141,7 +164,8 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
             cols.validate()?;
             let sym = self.symbolic.take().expect("checked above");
             let prev = self.factors.stats;
-            let replay = eliminate_fixed(cols, &sym, &self.opts);
+            let rel_tol = self.refactor_pivot_tol.unwrap_or(self.opts.rel_pivot_tol);
+            let replay = eliminate_fixed(cols, &sym, &self.opts, rel_tol);
             self.symbolic = Some(sym);
             if let Some(mut e) = replay {
                 // R7.
@@ -167,10 +191,11 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
     cols: &C,
     sym: &SymbolicLu,
     opts: &LuOptions,
+    rel_tol: f64,
 ) -> Option<Elim<T>> {
     let m = cols.m();
     let abs_tol = T::from_f64(opts.abs_pivot_tol);
-    let rel_tol = T::from_f64(opts.rel_pivot_tol);
+    let rel_tol = T::from_f64(rel_tol);
     let drop_tol = T::from_f64(opts.drop_tol);
     let mut e = Elim {
         nnz_basis: 0,

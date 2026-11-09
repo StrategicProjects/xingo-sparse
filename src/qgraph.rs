@@ -36,8 +36,9 @@
 //! longer needed). The exact external degree of `i` is
 //! `|(A_i ∪ ⋃_{e ∈ E_i} L_e) ∖ {i}|`. `n_el` is the weighted number of
 //! variables already eliminated (or excluded), so `n − n_el` remain.
-//! In the code `list[i]` holds `E_i` (its first `elen[i]` entries) followed
-//! by `A_i`, and `list[e]` holds `L_e`.
+//! In the code `list[i]` holds `A_i` followed by `E_i` (its last `elen[i]`
+//! entries, the newest element *last*, so that step Q5 updates the list in
+//! place and appends `p`), and `list[e]` holds `L_e`.
 //!
 //! ## Algorithm Q (approximate minimum degree on a quotient graph)
 //! Given `n` variables with original adjacencies `A_i` (AMD) and/or
@@ -119,6 +120,23 @@
 //! degree is ever computed: this is the gain of ADD 1996 over multiple
 //! minimum degree. Lists are separate vectors (no garbage collection).
 //!
+//! *Constant factors (task L1.5b).* The scans of Q4 and Q5 are the whole
+//! cost (≈ 85 % of the samples on maros-r7's augmented system), so they
+//! touch one array per entry, as SuiteSparse's AMD does: `w[e]` holds
+//! `w(e)` offset by a flag that grows by `n + 1` per pivot (`w[e] ≥ flag`:
+//! seen in this pivot; `0`: a dead element; restarted before it would
+//! overflow), and `vw[j]` is `|j|` for a live principal variable outside
+//! `L_p`, `0` for any other — the test of Q5's scan of `A_i`. Q5 compacts
+//! `list[i]` in place (hence `A_i` before `E_i`, the newest element last)
+//! instead of building a new vector, and `L_p` reuses one buffer. The
+//! output is unchanged bit for bit (a hash of the permutation of AMD and
+//! COLAMD on the 93 Netlib LPs, three patterns each, before and after).
+//! On maros-r7 the engine scans the same number of list entries as
+//! faer's port of SuiteSparse AMD (14.76 M in Q4 and 18.36 M in Q5,
+//! against 14.78 M and 18.38 M): what is left of the time difference is
+//! the storage — one vector per list here, one workspace with garbage
+//! collection there.
+//!
 //! ## References
 //! Amestoy, Davis & Duff, "An approximate minimum degree ordering
 //! algorithm", SIAM J. Matrix Anal. Appl. 17(4), 1996 (Algorithm 2, the
@@ -191,9 +209,16 @@ struct Graph {
     mindeg: usize,
     nel: usize,
     in_lp: Vec<bool>,
-    stamp: Vec<usize>,
-    diff: Vec<usize>,
-    cur: usize,
+    /// Step Q4's `w(e)`, offset: `w[e] ≥ wflg` marks an element seen in
+    /// the current pivot, whose `w(e)` is `w[e] − wflg` (one array for the
+    /// mark and the value, as in SuiteSparse's AMD).
+    w: Vec<u32>,
+    wflg: u32,
+    /// `|j|` of a live principal variable outside `L_p`, `0` for every
+    /// other variable: the one-array test of step Q5's scan of `A_i`.
+    vw: Vec<usize>,
+    /// The buffer of `L_p` (step Q3), reused from pivot to pivot.
+    lp_buf: Vec<u32>,
     mark: Vec<usize>,
     mark_cur: usize,
     hhead: Vec<u32>,
@@ -237,6 +262,7 @@ fn idx32(i: usize) -> u32 {
 
 impl Graph {
     /// Step Q1.
+    #[allow(clippy::too_many_lines)] // step Q1 and its bookkeeping, as in the chapter
     fn new(input: Input) -> Self {
         let Input {
             n,
@@ -250,28 +276,35 @@ impl Graph {
         debug_assert_eq!(adj.len(), n);
         debug_assert_eq!(excluded.len(), n);
         let ne = elems.len();
+        let mut w_dead = Vec::new();
         let total = n + ne;
         let mut einc: Vec<Vec<u32>> = vec![Vec::new(); n];
         let mut deg = vec![0_usize; total];
         let mut kind = vec![Kind::Var; total];
         let mut list: Vec<Vec<u32>> = Vec::with_capacity(total);
-        for (e, l) in elems.iter().enumerate() {
+        // E_i oldest... newest = the initial elements in decreasing order
+        // (the traversal of Q3 runs from the newest, i.e. increasing).
+        for (e, l) in elems.iter().enumerate().rev() {
             for &v in l {
                 debug_assert!(!excluded[u(v)], "excluded variable in an element");
                 einc[u(v)].push(idx32(n + e));
             }
         }
         let mut elen = vec![0_usize; n];
-        for (i, a) in adj.into_iter().enumerate() {
+        for (i, mut a) in adj.into_iter().enumerate() {
             elen[i] = einc[i].len();
-            let mut l = mem::take(&mut einc[i]);
-            l.extend(a);
-            list.push(l);
+            a.append(&mut einc[i]);
+            list.push(a);
         }
         for (e, l) in elems.into_iter().enumerate() {
             deg[n + e] = l.len();
             kind[n + e] = if l.is_empty() { Kind::Gone } else { Kind::Elem };
             list.push(l);
+        }
+        for (e, k) in kind.iter().enumerate().skip(n) {
+            if *k == Kind::Gone {
+                w_dead.push(e);
+            }
         }
         let mut g = Self {
             n,
@@ -288,9 +321,12 @@ impl Graph {
             mindeg: 0,
             nel: 0,
             in_lp: vec![false; n],
-            stamp: vec![0; total],
-            diff: vec![0; total],
-            cur: 0,
+            // 0 marks a dead element (any other value below `wflg`: not
+            // yet seen in the current pivot).
+            w: vec![1; total],
+            wflg: 0,
+            vw: vec![1; n],
+            lp_buf: Vec::new(),
             mark: vec![0; total],
             mark_cur: 0,
             hhead: vec![NONE; n.max(1)],
@@ -302,15 +338,20 @@ impl Graph {
             pivots: Vec::new(),
             paranoid: cfg!(debug_assertions) && n <= PARANOID_N,
         };
+        for e in w_dead {
+            g.w[e] = 0;
+        }
         for (i, &ex) in excluded.iter().enumerate() {
             if ex {
                 g.kind[i] = Kind::Gone;
                 g.nv[i] = 0;
+                g.vw[i] = 0;
                 g.nel += 1;
                 continue;
             }
             let ei = g.elen[i];
-            let from_elems: usize = g.list[i][..ei]
+            let from_elems: usize = g
+                .elems(i)
                 .iter()
                 .map(|&e| g.deg[u(e)].saturating_sub(1))
                 .sum();
@@ -336,6 +377,20 @@ impl Graph {
             debug_assert_eq!(g.check(), Ok(()));
         }
         g
+    }
+
+    /// `E_i`, oldest first.
+    #[inline]
+    fn elems(&self, i: usize) -> &[u32] {
+        let l = &self.list[i];
+        &l[l.len() - self.elen[i]..]
+    }
+
+    /// `A_i`.
+    #[inline]
+    fn vars(&self, i: usize) -> &[u32] {
+        let l = &self.list[i];
+        &l[..l.len() - self.elen[i]]
     }
 
     fn list_insert(&mut self, i: usize, d: usize) {
@@ -378,6 +433,7 @@ impl Graph {
         self.is_pivot[p] = true;
         self.pivots.push(idx32(p));
         self.in_lp[p] = true;
+        self.vw[p] = 0;
         let (lp, mut dk) = self.new_element(p);
         self.set_differences(&lp);
         let mut nvp = self.nv[p];
@@ -401,6 +457,7 @@ impl Graph {
                 self.deg[i] = d;
                 self.list_insert(i, d);
                 self.mindeg = self.mindeg.min(d);
+                self.vw[i] = self.nv[i];
                 kept.push(idx32(i));
             }
         }
@@ -408,41 +465,50 @@ impl Graph {
         self.nv[p] = nvp;
         if kept.is_empty() {
             self.kind[p] = Kind::Gone;
+            self.w[p] = 0;
         }
         self.list[p] = kept;
+        self.lp_buf = lp;
     }
 
     /// Step Q3: `L_p` and its weight; absorbs `E_p`.
     fn new_element(&mut self, p: usize) -> (Vec<u32>, usize) {
         let lst = mem::take(&mut self.list[p]);
-        let ep = self.elen[p];
-        let mut lp = Vec::new();
+        let split = lst.len() - self.elen[p];
+        let (vars, elems) = lst.split_at(split);
+        let mut lp = mem::take(&mut self.lp_buf);
+        lp.clear();
         let mut dk = 0;
-        // E_p holds the newest elements first (Q5 puts p in front); COLAMD
-        // visits the initial rows first, then the pivot rows oldest first.
-        let order: Vec<u32> = if self.column_order {
-            let (n, e) = (self.n, &lst[..ep]);
-            e.iter()
-                .copied()
-                .filter(|&x| u(x) >= n)
-                .chain(e.iter().rev().copied().filter(|&x| u(x) < n))
-                .collect()
-        } else {
-            lst[..ep].to_vec()
-        };
-        for &e in &order {
+        // E_p holds the newest elements last (Q5 appends p): AMD visits
+        // them newest first; COLAMD visits the initial rows first (in
+        // increasing order), then the pivot rows oldest first.
+        let n = self.n;
+        let mut absorb = |g: &mut Self, e: u32, lp: &mut Vec<u32>| {
             let e = u(e);
-            if self.kind[e] != Kind::Elem {
-                continue;
+            if g.kind[e] != Kind::Elem {
+                return;
             }
-            let le = mem::take(&mut self.list[e]);
+            let le = mem::take(&mut g.list[e]);
             for &j in &le {
-                dk += self.add_to_lp(u(j), &mut lp);
+                dk += g.add_to_lp(u(j), lp);
             }
-            self.kind[e] = Kind::Gone;
-            self.parent[e] = idx32(p);
+            g.kind[e] = Kind::Gone;
+            g.w[e] = 0;
+            g.parent[e] = idx32(p);
+        };
+        if self.column_order {
+            for &e in elems.iter().rev().filter(|&&x| u(x) >= n) {
+                absorb(self, e, &mut lp);
+            }
+            for &e in elems.iter().filter(|&&x| u(x) < n) {
+                absorb(self, e, &mut lp);
+            }
+        } else {
+            for &e in elems.iter().rev() {
+                absorb(self, e, &mut lp);
+            }
         }
-        for &j in &lst[ep..] {
+        for &j in vars {
             dk += self.add_to_lp(u(j), &mut lp);
         }
         self.kind[p] = Kind::Elem;
@@ -453,10 +519,13 @@ impl Graph {
     /// Adds the variable `j` to `L_p` if it is a live principal variable
     /// not yet there; returns the weight added.
     fn add_to_lp(&mut self, j: usize, lp: &mut Vec<u32>) -> usize {
-        if j >= self.n || self.kind[j] != Kind::Var || self.nv[j] == 0 || self.in_lp[j] {
+        // `vw[j] > 0` iff `j` is a live principal variable not in `L_p`.
+        if j >= self.n || self.vw[j] == 0 {
             return 0;
         }
+        debug_assert!(self.kind[j] == Kind::Var && self.nv[j] > 0 && !self.in_lp[j]);
         self.in_lp[j] = true;
+        self.vw[j] = 0;
         lp.push(idx32(j));
         self.list_remove(j);
         self.nv[j]
@@ -464,20 +533,36 @@ impl Graph {
 
     /// Step Q4.
     fn set_differences(&mut self, lp: &[u32]) {
-        self.cur += 1;
+        // Every w(e) is at most n: a stride of n + 1 leaves all the old
+        // marks below the new flag.
+        let stride = idx32(self.n + 1);
+        if self.wflg >= u32::MAX - 2 * stride {
+            // Restart the flag (SuiteSparse's clear_flag): every mark
+            // falls back to "not seen" (1), the dead stay 0.
+            for x in &mut self.w {
+                if *x != 0 {
+                    *x = 1;
+                }
+            }
+            self.wflg = 1;
+        }
+        self.wflg += stride;
+        let wflg = self.wflg;
         for &i in lp {
             let i = u(i);
-            let w = self.nv[i];
-            for &e in &self.list[i][..self.elen[i]] {
+            let nv = self.nv[i];
+            let l = &self.list[i];
+            for &e in &l[l.len() - self.elen[i]..] {
                 let e = u(e);
-                if self.kind[e] != Kind::Elem {
-                    continue;
+                let mut we = self.w[e];
+                if we == 0 {
+                    continue; // dead
                 }
-                if self.stamp[e] != self.cur {
-                    self.stamp[e] = self.cur;
-                    self.diff[e] = self.deg[e];
+                debug_assert_eq!(self.kind[e], Kind::Elem);
+                if we < wflg {
+                    we = idx32(self.deg[e]) + wflg;
                 }
-                self.diff[e] = self.diff[e].saturating_sub(w);
+                self.w[e] = we.saturating_sub(idx32(nv)).max(wflg);
             }
         }
     }
@@ -485,37 +570,54 @@ impl Graph {
     /// Step Q5 for `i ∈ L_p`; returns `Some(|i|)` if `i` was
     /// mass-eliminated with `p`.
     fn update_degree(&mut self, i: usize, p: usize) -> Option<usize> {
-        let old = mem::take(&mut self.list[i]);
-        let ei = self.elen[i];
-        let mut new = Vec::with_capacity(old.len() + 1);
-        new.push(idx32(p));
+        // Compacted in place: A_i first, then E_i (old order), then p.
+        let mut l = mem::take(&mut self.list[i]);
+        let split = l.len() - self.elen[i];
         let mut d = 0_usize;
         let mut h = 0_usize;
-        for &e in &old[..ei] {
-            let eu = u(e);
-            if self.kind[eu] != Kind::Elem {
-                continue;
-            }
-            let dext = self.diff[eu];
-            if dext > 0 || !self.aggressive {
-                d += dext;
-                new.push(e);
-                h = h.wrapping_add(eu);
-            } else {
-                self.kind[eu] = Kind::Gone;
-                self.parent[eu] = idx32(p);
-            }
-        }
-        let n_elems = new.len();
-        for &j in &old[ei..] {
+        let mut w = 0;
+        for r in 0..split {
+            let j = l[r];
             let ju = u(j);
-            if ju < self.n && self.kind[ju] == Kind::Var && self.nv[ju] > 0 && !self.in_lp[ju] {
-                d += self.nv[ju];
-                new.push(j);
+            debug_assert!(ju < self.n, "A_i holds variables only");
+            let wj = self.vw[ju];
+            debug_assert_eq!(
+                wj > 0,
+                self.kind[ju] == Kind::Var && self.nv[ju] > 0 && !self.in_lp[ju]
+            );
+            if wj > 0 {
+                d += wj;
+                l[w] = j;
+                w += 1;
                 h = h.wrapping_add(ju);
             }
         }
-        if new.len() == 1 {
+        let n_vars = w;
+        for r in split..l.len() {
+            let e = l[r];
+            let eu = u(e);
+            let we = self.w[eu];
+            // Every live element of E_i was seen in Q4; below the flag:
+            // dead.
+            if we < self.wflg {
+                debug_assert_ne!(self.kind[eu], Kind::Elem);
+                continue;
+            }
+            let dext = u(we - self.wflg);
+            if dext > 0 || !self.aggressive {
+                d += dext;
+                l[w] = e;
+                w += 1;
+                h = h.wrapping_add(eu);
+            } else {
+                self.kind[eu] = Kind::Gone;
+                self.w[eu] = 0;
+                self.parent[eu] = idx32(p);
+            }
+        }
+        l.truncate(w);
+        l.push(idx32(p));
+        if l.len() == 1 {
             let w = self.nv[i];
             self.kind[i] = Kind::Gone;
             self.parent[i] = idx32(p);
@@ -527,8 +629,8 @@ impl Graph {
         } else {
             d
         };
-        self.elen[i] = n_elems;
-        self.list[i] = new;
+        self.elen[i] = l.len() - n_vars;
+        self.list[i] = l;
         let b = h % self.n;
         self.hof[i] = b;
         self.hnext[i] = self.hhead[b];
@@ -552,16 +654,18 @@ impl Graph {
             while x != NONE && self.hnext[u(x)] != NONE {
                 let xu = u(x);
                 self.mark_cur += 1;
-                for &v in &self.list[xu][1..] {
+                let lx = &self.list[xu];
+                for &v in &lx[..lx.len() - 1] {
                     self.mark[u(v)] = self.mark_cur;
                 }
                 let mut last = xu;
                 let mut y = self.hnext[xu];
                 while y != NONE {
                     let yu = u(y);
-                    let same = self.list[yu].len() == self.list[xu].len()
+                    let ly = &self.list[yu];
+                    let same = ly.len() == self.list[xu].len()
                         && self.elen[yu] == self.elen[xu]
-                        && self.list[yu][1..]
+                        && ly[..ly.len() - 1]
                             .iter()
                             .all(|&v| self.mark[u(v)] == self.mark_cur);
                     let after = self.hnext[yu];
@@ -713,14 +817,14 @@ impl Graph {
                     exact += self.nv[j];
                 }
             };
-            for &e in &self.list[i][..self.elen[i]] {
+            for &e in self.elems(i) {
                 if self.kind[u(e)] == Kind::Elem {
                     for &j in &self.list[u(e)] {
                         visit(u(j), &mut seen);
                     }
                 }
             }
-            for &j in &self.list[i][self.elen[i]..] {
+            for &j in self.vars(i) {
                 visit(u(j), &mut seen);
             }
             if self.deg[i] < exact {

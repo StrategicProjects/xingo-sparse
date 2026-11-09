@@ -192,7 +192,7 @@
 
 use crate::basis::ColumnSource;
 use crate::error::LuError;
-use crate::real::{Real, approx_eq, is_exact_zero, is_zero, lt};
+use crate::real::{Real, approx_eq, is_exact_zero, is_zero, le_exact, lt};
 use crate::solve::{Kind, NO_ETA, SolveStats, Workspace};
 use crate::store::{CountLists, LineStore, NIL, check_links, remove_linked};
 use crate::symbolic::SymbolicLu;
@@ -209,6 +209,18 @@ use crate::{Colamd, Ordering, OrderingTarget, Pattern, Row, SparseError, SparseV
 pub struct LuOptions {
     /// Absolute pivot tolerance `τ_abs`: no pivot of magnitude at or below
     /// it is accepted, in the factorization or in an update (`1e-10`).
+    ///
+    /// Absolute, in the units of `B`: an unscaled matrix whose columns
+    /// hold only tiny entries is declared singular. The Harwell–Boeing
+    /// matrix sherman3 has 2 107 of its 5 005 columns with largest entry
+    /// `10⁻¹⁰` (inactive cells of a reservoir model) and is reported with
+    /// rank deficiency 2 107, while SuperLU, which has no absolute
+    /// threshold, factorizes it. Scale first ([`crate::Scaling`]: with
+    /// `Geometric { max_iters: 4, power_of_two: true }` it factorizes with
+    /// the defaults, residual `5·10⁻¹²`), or lower `τ_abs` (`10⁻¹²`:
+    /// residual `7·10⁻¹⁷`; task L1.5b, D9). The simplex method scales its
+    /// computational form when it is badly scaled (`ScaleMode::Auto`,
+    /// Chapter 6.9) before it factorizes.
     pub abs_pivot_tol: f64,
     /// Relative threshold `u ∈ (0, 1]` of Markowitz threshold pivoting
     /// (`1e-2`; the solver's `Tolerances::markowitz`).
@@ -449,6 +461,9 @@ pub struct Lu<T: Real = f64, U: BasisUpdate<T> = ForrestTomlin<T>> {
     pub(crate) symbolic: Option<SymbolicLu>,
     /// Column pre-order of the bump (step L5′); `None`: Algorithm M.
     pub(crate) pre_order: Option<PreOrder>,
+    /// Relative threshold of the replay test (step R5 of Chapter 5.12);
+    /// `None`: [`LuOptions::rel_pivot_tol`].
+    pub(crate) refactor_pivot_tol: Option<f64>,
 }
 
 impl<T: Real, U: BasisUpdate<T>> Default for Lu<T, U> {
@@ -541,6 +556,7 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
             expected_density: [0.0; 3],
             symbolic: None,
             pre_order: None,
+            refactor_pivot_tol: None,
         }
     }
 
@@ -562,6 +578,35 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
     #[inline]
     pub fn pre_order(&self) -> Option<PreOrder> {
         self.pre_order
+    }
+
+    /// The relative threshold `u_R` of the replay test of
+    /// [`LuFactor::refactorize_same_pattern`] (step R5 of Chapter 5.12):
+    /// `None` (the default) uses [`LuOptions::rel_pivot_tol`], the
+    /// threshold of the Markowitz search — a replayed sequence is then one
+    /// Algorithm L would have accepted, (R2); `Some(u_R)` with
+    /// `0 < u_R ≤ u` accepts the recorded pivots down to `u_R` times the
+    /// largest entry of their column, trading a little stability for
+    /// fewer fallbacks when the values drift (task L1.5b, D8). Never read
+    /// by [`LuFactor::factorize`] (Algorithm L is unchanged). A setter, not
+    /// a field of [`LuOptions`], for the reason of [`Lu::set_pre_order`].
+    ///
+    /// # Panics
+    /// If `u_R` is not in `(0, 1]`.
+    pub fn set_refactor_pivot_tol(&mut self, tol: Option<f64>) {
+        if let Some(u) = tol {
+            assert!(
+                u.is_finite() && lt(0.0, u) && le_exact(u, 1.0),
+                "refactor pivot tolerance {u} outside (0, 1]"
+            );
+        }
+        self.refactor_pivot_tol = tol;
+    }
+
+    /// The replay threshold in force ([`Lu::set_refactor_pivot_tol`]).
+    #[inline]
+    pub fn refactor_pivot_tol(&self) -> Option<f64> {
+        self.refactor_pivot_tol
     }
 
     /// `true` iff a spike is recorded and [`LuFactor::update`] may be

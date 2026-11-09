@@ -32,13 +32,20 @@
 //! * `Augmented { n_primal: n, n_dual: m }`: `K = [−D, Aᵀ; A, 0]`
 //!   (`N = n + m`), the `n` primal unknowns first.
 //!
-//! A [`Regularization`] `(ρ, δ, τ, β)` = (`primal`, `dual`, `pivot_tol`,
-//! `bump`) defines the matrix the backend factorizes,
+//! A [`Regularization`] `(ρ, δ, τ, β, scale)` = (`primal`, `dual`,
+//! `pivot_tol`, `bump`, `scale`) defines the matrix the backend
+//! factorizes. With `S = diag(s)` the symmetric equilibration of `K`
+//! (step K2′ below; powers of two) and `Σ = diag(−ρ I_n, δ I_m)` for the
+//! augmented system (`Σ = δ I_m` for the normal equations),
 //! ```text
-//!   K_reg = K + diag(−ρ I_n, δ I_m)   (augmented),   K_reg = K + δ I_m   (normal),
+//!   K_reg = K + S⁻¹ Σ S⁻¹    (ShiftScale::Equilibrated, the default),
+//!   K_reg = K + Σ            (ShiftScale::Absolute),
 //! ```
-//! and the *pivot signs* `σ_k = −1` for the primal rows, `+1` for the dual
-//! rows (all `+1` for the normal equations). The *inertia* of a symmetric
+//! so the default shifts are taken *in the equilibrated matrix*
+//! `K̃ = S K S`, whose rows have their largest entry near 1: `δ = 10⁻⁸` is
+//! then relative to the magnitude of each row, whatever the spread of
+//! `D`. The *pivot signs* are `σ_k = −1` for the primal rows, `+1` for the
+//! dual rows (all `+1` for the normal equations). The *inertia* of a symmetric
 //! matrix is the triple ([`Inertia`]) of the numbers of positive, negative
 //! and zero eigenvalues; by Sylvester's law it equals the count of
 //! positive, negative and zero pivots of any `P K Pᵀ = L Δ Lᵀ` with `Δ`
@@ -75,12 +82,13 @@
 //!     lies inside the pattern given to the analysis (missing entries are
 //!     zeros: an IPM value that became exactly zero leaves the CSC
 //!     pattern, (C3) of Chapter 5.8).
-//! K2. [Static regularization.] Assemble `K_reg`: the lower triangle of `K`
-//!     plus a full diagonal, with `−ρ` added to the primal diagonal and
-//!     `+δ` to the dual one (normal equations: `+δ` everywhere; `ρ` does
-//!     not apply, the caller folds it into `D`).
-//! K2′. [Symmetric equilibration (Ruiz 2001).] Scale `K_reg` to
-//!     `K̃ = S K_reg S`, `S = diag(s)` with powers of two: start from
+//! K1′. [Finite input.] Every stored value of the lower triangle of `K`
+//!     is finite ([`KktError::Structure`] otherwise): a NaN or an infinity
+//!     in `K` would otherwise surface as a NaN solution.
+//! K2. [Assemble.] The lower triangle of `K` on the analyzed pattern, which
+//!     has a full diagonal (a dual diagonal entry absent from `K` is `0`).
+//! K2′. [Symmetric equilibration (Ruiz 2001).] Scale `K` to
+//!     `K̃ = S K S`, `S = diag(s)` with powers of two: start from
 //!     `s = 1`; in each pass compute, for every row `i` of the *scaled*
 //!     matrix (both triangles), `r_i = max_j |k̃_ij|` and multiply `s_i` by
 //!     `⌊1/√r_i⌉₂` (rows without entries keep `s_i`); stop after a pass
@@ -88,13 +96,19 @@
 //!     after [`EQUILIBRATION_PASSES`] passes. Every row of `K̃` then has
 //!     its largest entry in `[2^{-1}, 2^{1}]` roughly, whatever the spread
 //!     of `D`. The scaling is a congruence, so the inertia of `K̃` is that
-//!     of `K_reg` (Sylvester). Being by powers of two it is exact, and an
+//!     of `K` (Sylvester). Being by powers of two it is exact, and an
 //!     `LDLᵀ` without pivoting *commutes* with it: the factor of `K̃` is
 //!     `(S L S⁻¹)(S Δ S)(S L S⁻¹)ᵀ` bit for bit, barring overflow and
-//!     underflow. So K2′ changes exactly two things: the thresholds `τ`, `β`
-//!     of K3 become *relative* to the magnitude of each row, and the
-//!     intermediate values stay in range. The backend factorizes `K̃` and
-//!     solves with `S F̃⁻¹ S`.
+//!     underflow. So K2′ by itself changes exactly two things: the
+//!     thresholds `τ`, `β` of K3 become *relative* to the magnitude of
+//!     each row, and the intermediate values stay in range.
+//! K2″. [Static regularization.] Add the shifts on the diagonal of `K̃`:
+//!     `Σ` itself with [`ShiftScale::Equilibrated`] (`K̃_reg = K̃ + Σ`),
+//!     `S Σ S` with [`ShiftScale::Absolute`] (`K̃_reg = S (K + Σ) S`): `−ρ`
+//!     on the primal diagonal and `+δ` on the dual one (normal equations:
+//!     `+δ` everywhere; `ρ` does not apply, the caller folds it into
+//!     `D`). The backend factorizes `K̃_reg` and solves with `S F̃⁻¹ S`;
+//!     `S⁻¹ K̃_reg S⁻¹` is the `K_reg` of the notation above.
 //! K3. [Dynamic regularization.] If `τ = pivot_tol` is `Some`, the backend
 //!     replaces every pivot `d_k` with `σ_k d_k ≤ τ` (too small, or of the
 //!     wrong sign) by `σ_k β` while it eliminates — the dynamic part of
@@ -102,6 +116,11 @@
 //!     faer's `LdltRegularization` applies — and counts the bumped pivots. Bumping
 //!     needs the sign `σ_k`, which only the form knows — the policy is
 //!     here; the elimination loop that applies it is the backend's.
+//! K3′. [Finite factor (S10).] Every stored value of the factor is
+//!     finite; otherwise the call fails with [`KktError::NotFinite`] at
+//!     the first column (original numbering) holding a NaN or an infinity
+//!     — an overflow of the elimination is reported, never handed to the
+//!     solves (where it would become a NaN solution).
 //! K4. [Inertia (S6).] From the pivots of the factor, count the inertia.
 //!     If it is not `(N, 0, 0)` (normal) or `(m, n, 0)` (augmented),
 //!     return [`KktError::WrongInertia`]. With `τ = Some`, every pivot has
@@ -110,36 +129,98 @@
 //!     (Algorithm F) measures how far it is from `K`.
 //!
 //! ## Choosing the regularization
-//! Static shifts work only above the rounding level of the matrix: a
-//! shift `δ < ε_T · max|k_ij|` changes nothing in floating point. At the
-//! end of an interior-point method `D` spreads to `10^{±10}` and
-//! `max|K| ≈ 10^{10}`, so the absolute `ρ = δ = 10⁻⁸` of
-//! [`Regularization::default`] no longer makes `K_reg` numerically
-//! quasi-definite: on the Netlib LPs of L1.5 it produced wrong-signed
-//! pivots in 139 of 558 systems, and 32 of them failed even with bumping
-//! (overflow, or a residual above `10⁻¹⁰`). Shifts relative to the matrix,
-//! [`Regularization::relative_to`]`(k, 10⁻⁸)`, gave the right inertia
-//! without a single bump and a refined residual below `10⁻¹²` in all 558
-//! (L1.5, D3). The default keeps the absolute values of the contract;
-//! an interior-point method should pass relative ones.
+//! Three facts, measured on the 558 Netlib systems of L1.5/L1.5b (93 LPs ×
+//! normal and augmented × the start, middle and end regimes of `D`),
+//! decide the default.
 //!
-//! ## Algorithm F (Iterative refinement with the best iterate; (S7))
+//! 1. *A shift must be above the rounding level of its row.* A shift
+//!    `δ < ε_T · max|k_ij|` changes nothing in floating point. At the end
+//!    of an interior-point method `D` spreads to `10^{±10}` and
+//!    `max|K| ≈ 10^{10}`, so the absolute `ρ = δ = 10⁻⁸` of L1.5 failed on
+//!    32 of the 558 systems (zero pivots after overflow, or NaN
+//!    solutions). One shift relative to the whole matrix
+//!    ([`Regularization::relative_to`]`(k, 10⁻⁸)`, `δ ≈ 10²` there)
+//!    factorizes all 558, but perturbs the rows of small magnitude so much
+//!    that refinement against the unregularized `K` stalls (418 of 558 at
+//!    or below `10⁻¹⁰` after 50 classical steps). Shifts taken in the
+//!    equilibrated matrix (step K2″, [`ShiftScale::Equilibrated`]) are
+//!    relative *row by row*.
+//! 2. *The product `ρδ` must be well above the unit roundoff.* Eliminating
+//!    a primal pivot of size `~ρ` adds terms of size `~1/ρ` to the dual
+//!    block, whose pivots must stay above `δ`: with `ρ = δ = 10⁻⁸` in the
+//!    equilibrated matrix (`ρδ = 10⁻¹⁶ < ε`) nine augmented systems of the
+//!    end regime still got pivots of the wrong sign; with `ρδ ≥ 10⁻¹⁴` none
+//!    did (the stability analysis of quasi-definite factorizations of Gill,
+//!    Saunders & Shinnerl 1996 bounds the growth by the shifts).
+//! 3. *The normal equations see only `δ`*, and every unit of `δ` slows the
+//!    refinement on their small eigenvalues: `δ = 10⁻⁶` left 46 systems
+//!    above `10⁻¹⁰` after ten steps, `δ = 10⁻⁸` none (with Algorithm F's
+//!    GMRES).
+//!
+//! Hence the default `ρ = 10⁻⁶`, `δ = 10⁻⁸`, equilibrated: all 558 systems
+//! with the right inertia, no bump, and a residual against the
+//! unregularized `K` at or below `10⁻¹⁰` after the ten steps of
+//! [`Refinement::default`] (L1.5b, D1–D3; the bumping of K3 is the safety
+//! net, not the mechanism). An interior-point method that wants other
+//! values passes them; [`ShiftScale::Absolute`] keeps shifts in the
+//! caller's units.
+//!
+//! ## Algorithm F (Refinement by preconditioned GMRES, with the best iterate; (S7))
 //! Given a factor `F ≈ K_reg`, the matrix `K` to be solved (the
 //! *unregularized* one, or `K_reg` itself — whichever the caller passes),
-//! `b` and a [`Refinement`] `(max_iters, target)`:
+//! `b` and a [`Refinement`] `(t_max, target)` = (`max_iters`,
+//! `target_residual`), where `t_max` bounds the solves with `F` after the
+//! first one:
 //! F1. `x ← F⁻¹ b`; `r ← b − K x`; `ρ ← res(x)`; `x* ← x`, `ρ* ← ρ`;
 //!     `t ← 0`.
-//! F2. If `ρ* ≤ target`, `t = max_iters`, or `ρ` is not finite, go to F4.
-//! F3. `t ← t + 1`; `x ← x + F⁻¹ r`; `r ← b − K x`; `ρ ← res(x)`. If
-//!     `ρ < ρ*`, set `x* ← x`, `ρ* ← ρ`. Go to F2.
-//! F4. Return `x*` with `iters = t`, `residual = ρ*` and
+//! F2. [Done?] If `ρ* ≤ target`, `ρ` is not finite, or `t = t_max`, go to
+//!     F6.
+//! F3. [Arnoldi cycle, right preconditioned (Saad 2003, §9.3.2).] `x ← x*`,
+//!     `r ← b − K x` (the residual of the best iterate), `β ← ‖r‖₂`,
+//!     `v₁ ← r/β`, `g ← β e₁`, `m ← t_max − t`. For `j = 1, 2, …, m`:
+//!     `z_j ← F⁻¹ v_j`, `t ← t + 1`; `w ← K z_j`; modified Gram–Schmidt
+//!     `h_ij ← ⟨w, v_i⟩`, `w ← w − h_ij v_i` for `i ≤ j`;
+//!     `h_{j+1,j} ← ‖w‖₂`; apply the previous Givens rotations to column
+//!     `j` of `H`, compute the rotation that annihilates `h_{j+1,j}` and
+//!     apply it to `g`. Leave the loop with `k = j` when `h_{j+1,j} = 0`
+//!     (the Krylov space is invariant: the solution is in it), when
+//!     `|g_{j+1}| ≤ target·(1 + ‖b‖_∞)` (in exact arithmetic `|g_{j+1}|`
+//!     is the 2-norm of the residual, which bounds its ∞-norm), or when
+//!     `j = m`.
+//! F4. [Update.] Solve the `k × k` upper triangular system `R y = g_{1:k}`
+//!     (the rotated `H`); `x ← x* + Σ_j y_j z_j`; `r ← b − K x`;
+//!     `ρ ← res(x)`. If `ρ < ρ*`, set `x* ← x`, `ρ* ← ρ`.
+//! F5. Go to F2 (a new cycle restarts from `x*`).
+//! F6. Return `x*` with `iters = t`, `residual = ρ*` and
 //!     `converged = (ρ* ≤ target)`.
 //!
-//! The iteration continues from its current iterate even when a step does
-//! not improve on the best (the residual of fixed-precision refinement
-//! need not decrease monotonically near its floor, and stopping at the
-//! first non-improving step left `wood1p` at `4·10⁻⁹`, L1.5, D5); (S7)
-//! holds because only `x*` is returned.
+//! *Why GMRES and not the classical iteration.* The classical refinement
+//! `x ← x + F⁻¹ r` of L1.5 contracts the error by the factor
+//! `‖I − F⁻¹ K‖ = ‖F⁻¹ (K_reg − K)‖` per step; on the eigenvectors of `K`
+//! whose eigenvalues are not much larger than the shifts — the nearly
+//! rank-deficient `A D Aᵀ` of the middle of an interior-point method, or
+//! an augmented system with `D` spread to `10^{±4}` — that factor is close
+//! to 1, and ten steps left 15 of the 558 Netlib systems of L1.5b above
+//! `10⁻¹⁰` against the unregularized `K`. Right-preconditioned GMRES
+//! minimizes `‖b − K x‖₂` over the same affine Krylov space
+//! `x₀ + span{F⁻¹r₀, (F⁻¹K) F⁻¹r₀, …}` that holds the classical
+//! iterates, so in exact arithmetic it is never worse, and the few
+//! eigenvalues of `F⁻¹ K` far from 1 — one per small eigenvalue of `K`,
+//! the regularization being a small perturbation elsewhere — cost one
+//! step each. This is GMRES preconditioned by a perturbed (statically
+//! pivoted, here statically regularized) `LDLᵀ`, analyzed by Arioli,
+//! Duff, Gratton & Pralet (2007), and GMRES-based iterative refinement
+//! (Carson & Higham 2017). One cycle with all the budget is the normal
+//! case; F5 restarts only when the estimate `|g_{k+1}|` and the computed
+//! residual disagree (rounding) or the budget allows another cycle after
+//! a breakdown.
+//!
+//! *Memory.* A cycle of `m` steps keeps `m + 1` Arnoldi vectors `v_j` and
+//! `m` preconditioned vectors `z_j` (so F4 needs no further solve), plus
+//! `H` and the rotations: `(2m + 3) N + O(m²)` scalars, held by a
+//! [`RefineWorkspace`] that [`KktSolver::solve_refined_with`] reuses
+//! across calls — after the first call with a given order and budget,
+//! refinement allocates nothing (Chapter 5.15 for the solves themselves).
 //!
 //! The residual is computed with the stored lower triangle of `K`
 //! (`y_i += k_ij x_j` and, for `i ≠ j`, `y_j += k_ij x_i`), in the working
@@ -162,7 +243,12 @@
 //!      factorization in debug builds.
 //! (S7) (the contract's) [`KktSolver::solve_refined`] never returns a
 //!      residual larger than that of its first solve: it keeps the best
-//!      iterate (step F3). Asserted in debug builds.
+//!      iterate (step F4). Asserted in debug builds.
+//! (S10) A factor returned by [`KktSolver::factorize`] holds only finite
+//!      values (step K3′); [`KktSolver::solve_refined`] reports a
+//!      non-finite solution explicitly: its `residual` is NaN or infinite
+//!      exactly when the returned `x` has a non-finite entry, and then
+//!      `converged = false` (the input `K`, `b` being finite).
 //!
 //! ## References
 //! Chen, Davis, Hager & Rajamanickam, "Algorithm 887: CHOLMOD, supernodal
@@ -185,7 +271,17 @@
 //! 2001 (symmetric variant, rounded to powers of two here); Stellato et al., "OSQP: an
 //! operator splitting solver for quadratic programs", Math. Prog. Comp.
 //! 12, 2020 (quasi-definite `LDLᵀ` without pivoting in an optimization
-//! solver).
+//! solver); Saad, *Iterative Methods for Sparse Linear Systems*, 2nd ed.,
+//! SIAM 2003, §6.5 and §9.3 (GMRES, right preconditioning, Givens
+//! rotations); Arioli, Duff, Gratton & Pralet, "A note on GMRES
+//! preconditioned by a perturbed `LDLᵀ` decomposition with static
+//! pivoting", SIAM J. Sci. Comput. 29(5), 2007; Carson & Higham, "A new
+//! analysis of iterative refinement and its application to accurate
+//! solution of ill-conditioned sparse linear systems", SIAM J. Sci.
+//! Comput. 39(6), 2017; Saunders & Tomlin, "Solving regularized linear
+//! programs using barrier methods and KKT systems", SOL 96-4, 1996 (the
+//! product `ρδ` above the rounding level for a stable quasi-definite
+//! factorization).
 
 use crate::real::{Real, is_exact_zero, is_nan, le, lt};
 use crate::{CscMatrix, KktError, Ordering, Pattern, SparseError};
@@ -203,37 +299,62 @@ pub struct Inertia {
     pub zero: usize,
 }
 
+/// Where the static shifts `ρ`, `δ` of a [`Regularization`] are applied
+/// (step K2″ of Algorithm K).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ShiftScale {
+    /// On the diagonal of the equilibrated matrix `K̃ = S K S` (step K2′),
+    /// whose rows have their largest entry near 1: the shifts are
+    /// relative to the magnitude of each row, `K_reg = K + S⁻¹ Σ S⁻¹`.
+    /// The default.
+    #[default]
+    Equilibrated,
+    /// On the diagonal of `K` itself, in the caller's units:
+    /// `K_reg = K + Σ`.
+    Absolute,
+}
+
 /// Regularization of a quasi-definite KKT matrix (Altman & Gondzio 1999;
 /// Algorithm K).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Regularization<T: Real = f64> {
-    /// `ρ ≥ 0`, added to the primal block (which becomes `−D − ρI`);
-    /// ignored for the normal equations.
+    /// `ρ ≥ 0`, added to the primal block (which becomes `−D − ρI`, in
+    /// the units [`Regularization::scale`] says); ignored for the normal
+    /// equations.
     pub primal: T,
     /// `δ ≥ 0`, added to the dual block (`δI`), or to the whole diagonal
-    /// of the normal equations (`A D Aᵀ + δI`).
+    /// of the normal equations (`A D Aᵀ + δI`), in the units
+    /// [`Regularization::scale`] says.
     pub dual: T,
-    /// Below this magnitude (or with the wrong sign) a pivot is bumped to
-    /// `±bump` with the sign the inertia expects (dynamic regularization,
-    /// step K3); `None` disables it.
+    /// Below this magnitude (or with the wrong sign) a pivot of the
+    /// equilibrated matrix is bumped to `±bump` with the sign the inertia
+    /// expects (dynamic regularization, step K3); `None` disables it.
     pub pivot_tol: Option<T>,
-    /// The magnitude `β > 0` of a bumped pivot.
+    /// The magnitude `β > 0` of a bumped pivot (of the equilibrated
+    /// matrix).
     pub bump: T,
+    /// Whether `ρ`, `δ` are taken in the equilibrated matrix (the default)
+    /// or in `K` itself (step K2″).
+    pub scale: ShiftScale,
 }
 
 impl<T: Real> Default for Regularization<T> {
-    /// `ρ = δ = 10⁻⁸`, and pivots of the wrong sign or of magnitude at
-    /// most `τ = 10⁻¹³` bumped to `±β = ±2·10⁻⁷` — the order of the
-    /// defaults of current interior-point codes (Clarabel's documented
-    /// static and dynamic regularization; not tuned here). `β ≠ δ` on
-    /// purpose: a dual pivot equal to `δ` is not mistaken for a bump by
-    /// the backends that count bumps by value (Chapter 5.15).
+    /// `ρ = 10⁻⁶`, `δ = 10⁻⁸` *in the equilibrated matrix*
+    /// ([`ShiftScale::Equilibrated`]: relative to each row), and pivots of
+    /// the wrong sign or of magnitude at most `τ = 10⁻¹³` bumped to
+    /// `±β = ±2·10⁻⁷`. `ρδ = 10⁻¹⁴`, about 50 units of roundoff, keeps the
+    /// regularized augmented matrix numerically quasi-definite; `δ`
+    /// alone, small, is what the normal equations see (Chapter 5.14,
+    /// "Choosing the regularization", measured in L1.5b). `τ`, `β` are of
+    /// the order of the defaults of current interior-point codes
+    /// (Clarabel's documented dynamic regularization; not tuned here).
     fn default() -> Self {
         Self {
-            primal: T::from_f64(1e-8),
+            primal: T::from_f64(1e-6),
             dual: T::from_f64(1e-8),
             pivot_tol: Some(T::from_f64(1e-13)),
             bump: T::from_f64(2e-7),
+            scale: ShiftScale::Equilibrated,
         }
     }
 }
@@ -248,23 +369,27 @@ impl<T: Real> Regularization<T> {
             dual: T::ZERO,
             pivot_tol: None,
             bump: T::ZERO,
+            scale: ShiftScale::Equilibrated,
         }
     }
 
-    /// Static shifts relative to the magnitude of `k`: `ρ = δ = factor ·
-    /// max|k_ij|`, with the dynamic part of [`Regularization::default`].
+    /// Absolute static shifts relative to the largest entry of `k`:
+    /// `ρ = δ = factor · max|k_ij|` with [`ShiftScale::Absolute`], and the
+    /// dynamic part of [`Regularization::default`] (the L1.5 variant).
     ///
-    /// An absolute `δ` stops regularizing once it falls below the rounding
-    /// level `ε_T · max|k_ij|` — at the end of an interior-point method,
-    /// where `D` spreads to `10^{±10}`, `10⁻⁸` does (Chapter 5.14, "Choosing
-    /// the regularization"). `factor = 10⁻⁸` passed every Netlib case of
-    /// L1.5 in the three regimes.
+    /// One shift for the whole matrix: at the end of an interior-point
+    /// method, where `max|k_ij| ≈ 10^{10}`, `factor = 10⁻⁸` gives
+    /// `δ ≈ 10²`, a large perturbation of the rows of small magnitude —
+    /// refinement against the unregularized `K` then converges slowly
+    /// (Chapter 5.14, "Choosing the regularization"). The default
+    /// ([`ShiftScale::Equilibrated`]) is relative row by row instead.
     #[must_use]
     pub fn relative_to(k: &CscMatrix<T>, factor: T) -> Self {
         let big = inf_norm(&k.val);
         Self {
             primal: factor * big,
             dual: factor * big,
+            scale: ShiftScale::Absolute,
             ..Self::default()
         }
     }
@@ -400,6 +525,8 @@ pub trait KktSolver<T: Real> {
     /// keeps the best iterate (S7). `k` is the matrix to be solved — the
     /// unregularized one the factor approximates, or any other with the
     /// same order; only its lower triangle is read. `x` is overwritten.
+    /// Allocates its work vectors; [`KktSolver::solve_refined_with`]
+    /// reuses them.
     ///
     /// # Panics
     /// If `b`, `x` and `k` do not have the order of the factor.
@@ -411,49 +538,160 @@ pub trait KktSolver<T: Real> {
         x: &mut [T],
         refinement: Refinement<T>,
     ) -> RefineReport<T> {
+        let mut work = RefineWorkspace::new();
+        self.solve_refined_with(numeric, k, b, x, refinement, &mut work)
+    }
+
+    /// [`KktSolver::solve_refined`] with caller-owned work vectors: once
+    /// `work` has served a call with the same order and budget, the
+    /// refinement allocates nothing.
+    ///
+    /// # Panics
+    /// If `b`, `x` and `k` do not have the order of the factor.
+    #[allow(clippy::too_many_lines)] // one step of Algorithm F per block, as in the chapter
+    fn solve_refined_with(
+        &self,
+        numeric: &Self::Numeric,
+        k: &CscMatrix<T>,
+        b: &[T],
+        x: &mut [T],
+        refinement: Refinement<T>,
+        work: &mut RefineWorkspace<T>,
+    ) -> RefineReport<T> {
         let n = b.len();
         assert_eq!(x.len(), n, "solve_refined: x has the wrong length");
         assert!(
             k.n_rows == n && k.n_cols() == n,
             "solve_refined: k has the wrong order"
         );
+        let budget = refinement.max_iters;
+        work.reserve(n, budget);
         let scale = T::ONE + inf_norm(b);
+        let tol = refinement.target_residual * scale;
         // F1.
         x.copy_from_slice(b);
         self.solve(numeric, x);
-        let mut r = vec![T::ZERO; n];
-        residual(k, x, b, &mut r);
-        let first = inf_norm(&r) / scale;
+        let RefineWorkspace {
+            r,
+            cur,
+            v,
+            z,
+            h,
+            g,
+            cs,
+            sn,
+            y,
+        } = work;
+        residual(k, x, b, r);
+        let first = inf_norm(r) / scale;
         let mut best = first;
-        let mut iters = 0;
-        let mut d = vec![T::ZERO; n];
-        let mut cur = x.to_vec();
-        let mut res = first;
-        // F2–F3.
-        while res.is_finite()
-            && !le(best, refinement.target_residual, T::ZERO)
-            && iters < refinement.max_iters
-        {
-            iters += 1;
-            d.copy_from_slice(&r);
-            self.solve(numeric, &mut d);
-            for (c, &di) in cur.iter_mut().zip(&d) {
-                *c += di;
+        let mut t = 0;
+        // `r` holds b − K x* at the top of every cycle.
+        loop {
+            // F2.
+            if !best.is_finite() || le(best, refinement.target_residual, T::ZERO) || t >= budget {
+                break;
             }
-            residual(k, &cur, b, &mut r);
-            res = inf_norm(&r) / scale;
+            // F3.
+            let m = budget - t;
+            let beta = norm2(r);
+            if !beta.is_finite() || is_exact_zero(beta) {
+                break;
+            }
+            for (vi, &ri) in v[..n].iter_mut().zip(r.iter()) {
+                *vi = ri / beta;
+            }
+            g.fill(T::ZERO);
+            g[0] = beta;
+            let mut steps = 0;
+            for j in 0..m {
+                let (zj, vj) = (&mut z[j * n..(j + 1) * n], &v[j * n..(j + 1) * n]);
+                zj.copy_from_slice(vj);
+                self.solve(numeric, zj);
+                t += 1;
+                steps = j + 1;
+                let (done, rest) = v.split_at_mut((j + 1) * n);
+                let w = &mut rest[..n];
+                sym_lower_matvec(k, &z[j * n..(j + 1) * n], w);
+                // Column j of H, (m + 1) rows, column-major.
+                let col = &mut h[j * (m + 1)..(j + 1) * (m + 1)];
+                for i in 0..=j {
+                    let vi = &done[i * n..(i + 1) * n];
+                    let hij = dot(w, vi);
+                    col[i] = hij;
+                    for (wk, &vk) in w.iter_mut().zip(vi) {
+                        *wk -= hij * vk;
+                    }
+                }
+                let hnext = norm2(w);
+                col[j + 1] = hnext;
+                if !hnext.is_finite() {
+                    steps = j;
+                    break;
+                }
+                // Previous rotations on column j.
+                for i in 0..j {
+                    let (a, c) = (col[i], col[i + 1]);
+                    col[i] = cs[i] * a + sn[i] * c;
+                    col[i + 1] = cs[i] * c - sn[i] * a;
+                }
+                // New rotation annihilating h_{j+1,j}.
+                let (a, c) = (col[j], col[j + 1]);
+                let rr = norm2(&[a, c]);
+                if is_exact_zero(rr) {
+                    // R singular in this column: drop the step.
+                    steps = j;
+                    break;
+                }
+                cs[j] = a / rr;
+                sn[j] = c / rr;
+                col[j] = rr;
+                col[j + 1] = T::ZERO;
+                g[j + 1] = -sn[j] * g[j];
+                g[j] *= cs[j];
+                if is_exact_zero(hnext) || le(g[j + 1].abs(), tol, T::ZERO) {
+                    break;
+                }
+                for wk in w.iter_mut() {
+                    *wk = *wk / hnext;
+                }
+            }
+            if steps == 0 {
+                break;
+            }
+            // F4: back substitution R y = g.
+            for i in (0..steps).rev() {
+                let mut acc = g[i];
+                for l in i + 1..steps {
+                    acc -= h[l * (m + 1) + i] * y[l];
+                }
+                y[i] = acc / h[i * (m + 1) + i];
+            }
+            cur.copy_from_slice(x);
+            for (l, &yl) in y[..steps].iter().enumerate() {
+                for (c, &zl) in cur.iter_mut().zip(&z[l * n..(l + 1) * n]) {
+                    *c += yl * zl;
+                }
+            }
+            residual(k, cur, b, r);
+            let res = inf_norm(r) / scale;
             if res.is_finite() && lt(res, best) {
-                x.copy_from_slice(&cur);
+                // `r` is the residual of the new x*.
+                x.copy_from_slice(cur);
                 best = res;
+            } else {
+                // F5 would restart from the same x*, whose cycle is the
+                // one just done (deterministic): stop.
+                break;
             }
         }
-        // F4.
+        // F6.
         debug_assert!(
             !best.is_finite() || !first.is_finite() || le(best, first, T::ZERO),
             "(S7): the returned residual exceeds the first one"
         );
         RefineReport {
-            iters,
+            iters: t,
             residual: best,
             converged: best.is_finite() && le(best, refinement.target_residual, T::ZERO),
         }
@@ -477,6 +715,83 @@ pub(crate) fn inf_norm<T: Real>(v: &[T]) -> T {
         m = m.max(x.abs());
     }
     m
+}
+
+/// `‖v‖₂`, scaled against overflow (NaN propagates).
+fn norm2<T: Real>(v: &[T]) -> T {
+    let big = inf_norm(v);
+    if !big.is_finite() || is_exact_zero(big) {
+        return big;
+    }
+    let mut s = T::ZERO;
+    for &x in v {
+        let q = x / big;
+        s += q * q;
+    }
+    big * s.sqrt()
+}
+
+/// `⟨u, v⟩`.
+fn dot<T: Real>(u: &[T], v: &[T]) -> T {
+    let mut s = T::ZERO;
+    for (&a, &b) in u.iter().zip(v) {
+        s += a * b;
+    }
+    s
+}
+
+/// Work vectors of Algorithm F, reusable across calls of
+/// [`KktSolver::solve_refined_with`]: `(2m + 3) N + O(m²)` scalars for a
+/// budget of `m = max_iters` solves and order `N`. Grows on demand, never
+/// shrinks.
+#[derive(Clone, Debug, Default)]
+pub struct RefineWorkspace<T: Real = f64> {
+    r: Vec<T>,
+    cur: Vec<T>,
+    v: Vec<T>,
+    z: Vec<T>,
+    h: Vec<T>,
+    g: Vec<T>,
+    cs: Vec<T>,
+    sn: Vec<T>,
+    y: Vec<T>,
+}
+
+impl<T: Real> RefineWorkspace<T> {
+    /// An empty workspace (it grows at the first call).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            r: Vec::new(),
+            cur: Vec::new(),
+            v: Vec::new(),
+            z: Vec::new(),
+            h: Vec::new(),
+            g: Vec::new(),
+            cs: Vec::new(),
+            sn: Vec::new(),
+            y: Vec::new(),
+        }
+    }
+
+    /// Sizes the vectors for order `n` and budget `m` (allocates only when
+    /// they grow).
+    fn reserve(&mut self, n: usize, m: usize) {
+        fn fit<T: Real>(v: &mut Vec<T>, len: usize) {
+            if v.len() != len {
+                v.resize(len, T::ZERO);
+            }
+        }
+        fit(&mut self.r, n);
+        fit(&mut self.cur, n);
+        fit(&mut self.v, (m + 1) * n);
+        fit(&mut self.z, m * n);
+        fit(&mut self.h, (m + 1) * m);
+        fit(&mut self.g, m + 1);
+        fit(&mut self.cs, m);
+        fit(&mut self.sn, m);
+        fit(&mut self.y, m);
+    }
 }
 
 /// `y ← K x` with `K` given by the lower triangle of `k` (entries above
@@ -592,17 +907,46 @@ pub(crate) fn pivot_signs(form: KktForm, n: usize) -> Vec<i8> {
     }
 }
 
-/// Step K2: scatters the lower triangle of `k` into the values of the
-/// analyzed lower pattern `l` (which has a full diagonal) and adds the
-/// static shifts. Fails (K1) if `k` does not satisfy (S1), has the wrong
-/// order, or has a lower entry outside `l`.
+/// Steps K1′–K2″: scatters the lower triangle of `k` into the values of
+/// the analyzed lower pattern `l` (which has a full diagonal), equilibrates
+/// it (K2′) and adds the static shifts (K2″); returns the values of
+/// `K̃_reg` and the scaling `s`. Fails (K1, K1′) if `k` does not satisfy
+/// (S1), has the wrong order, has a lower entry outside `l`, or a
+/// non-finite lower entry.
 #[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn assemble_regularized<T: Real>(
     l: &Pattern,
     form: KktForm,
     k: &CscMatrix<T>,
     reg: &Regularization<T>,
-) -> Result<Vec<T>, KktError> {
+) -> Result<(Vec<T>, Vec<T>), KktError> {
+    let mut val = assemble(l, k)?;
+    let s = equilibrate_symmetric(l, &mut val);
+    for (j, &sj) in s.iter().enumerate() {
+        let shift = match form {
+            KktForm::NormalEquations => reg.dual,
+            KktForm::Augmented { n_primal, .. } => {
+                if j < n_primal {
+                    -reg.primal
+                } else {
+                    reg.dual
+                }
+            }
+        };
+        if !is_exact_zero(shift) {
+            // The diagonal is the first entry of column j of l.
+            let p = l.col_ptr[j];
+            val[p] += match reg.scale {
+                ShiftScale::Equilibrated => shift,
+                ShiftScale::Absolute => shift * sj * sj,
+            };
+        }
+    }
+    Ok((val, s))
+}
+
+/// Steps K1′–K2: the lower triangle of `k` on the analyzed pattern `l`.
+fn assemble<T: Real>(l: &Pattern, k: &CscMatrix<T>) -> Result<Vec<T>, KktError> {
     k.check_invariants()?;
     let n = l.n_cols();
     if k.n_rows != n || k.n_cols() != n {
@@ -631,23 +975,18 @@ pub(crate) fn assemble_regularized<T: Real>(
                     "KKT entry ({i}, {j}) is outside the analyzed pattern"
                 ))));
             }
+            // K1′.
+            if !k.val[p].is_finite() {
+                return Err(KktError::Structure(SparseError::InvalidValue {
+                    what: "KKT matrix entry (not finite)",
+                    index: p,
+                    value: k.val[p].to_f64(),
+                }));
+            }
             val[base + q] = k.val[p];
         }
         // The diagonal is the first entry of column j of l.
         debug_assert_eq!(lrows[0] as usize, j);
-        let shift = match form {
-            KktForm::NormalEquations => reg.dual,
-            KktForm::Augmented { n_primal, .. } => {
-                if j < n_primal {
-                    -reg.primal
-                } else {
-                    reg.dual
-                }
-            }
-        };
-        if !is_exact_zero(shift) {
-            val[base] += shift;
-        }
     }
     Ok(val)
 }
@@ -839,14 +1178,41 @@ mod tests {
             n_dual: 1,
         };
         let l = lower_with_diagonal(&k.pattern(), form).unwrap();
-        let reg = Regularization {
+        let mut reg = Regularization {
             primal: 0.5,
             dual: 0.25,
             pivot_tol: None,
             bump: 0.0,
+            scale: ShiftScale::Absolute,
+        };
+        // S⁻¹ K̃_reg S⁻¹ = K + Σ exactly (powers of two), whatever S.
+        let unscale = |(v, s): (Vec<f64>, Vec<f64>)| -> Vec<f64> {
+            let mut u = Vec::new();
+            for j in 0..l.n_cols() {
+                for p in l.col_ptr[j]..l.col_ptr[j + 1] {
+                    u.push(v[p] / (s[l.row_idx[p] as usize] * s[j]));
+                }
+            }
+            u
         };
         let v = assemble_regularized(&l, form, &k, &reg).unwrap();
-        assert_eq!(v, vec![-1.5, 1.0, -2.5, 0.25]);
+        assert!(v.1.iter().all(|&x| x > 0.0 && x.log2().fract() == 0.0));
+        assert_eq!(unscale(v), vec![-1.5, 1.0, -2.5, 0.25]);
+        // Equilibrated: K + S⁻¹ Σ S⁻¹.
+        reg.scale = ShiftScale::Equilibrated;
+        let (v, s) = assemble_regularized(&l, form, &k, &reg).unwrap();
+        let u = unscale((v, s.clone()));
+        assert_eq!(u[0], -1.0 - 0.5 / (s[0] * s[0]));
+        assert_eq!(u[1], 1.0);
+        assert_eq!(u[2], -2.0 - 0.5 / (s[1] * s[1]));
+        assert_eq!(u[3], 0.25 / (s[2] * s[2]));
+        // A non-finite entry is refused (K1′).
+        let mut nan = k.clone();
+        nan.val[1] = f64::NAN;
+        assert!(matches!(
+            assemble_regularized(&l, form, &nan, &reg),
+            Err(KktError::Structure(_))
+        ));
         let other = CscMatrix::from_triplets(3, 3, &[(Row(2), Col(1), 1.0)]).unwrap();
         assert!(matches!(
             assemble_regularized(&l, form, &other, &reg),
