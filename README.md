@@ -94,11 +94,12 @@ in the CHOLMOD shape (analyze once, factorize many, solve), with the
 **regularization** policy (static shifts `ρ, δ` in the equilibrated matrix
 plus dynamic pivot bumping, Altman & Gondzio 1999) and **iterative
 refinement** (right-preconditioned GMRES, best iterate kept) in the trait's
-provided methods, so every backend shares them. Two backends: our own
-**`SupernodalLdl`** — a supernodal LDLᵀ (elimination tree, relaxed
-supernodes, left-looking blocks on dense kernels, exact bump counts),
-generic in the scalar and with no dependency — and `FaerLdl`, faer's sparse
-LDLᵀ/LBLᵀ (feature `faer`), both ordered by our AMD.
+provided methods, so every backend shares them. The **recommended
+backend is our own `SupernodalLdl`** — a supernodal LDLᵀ (elimination
+tree, relaxed supernodes, left-looking blocks on dense kernels, exact bump
+counts), generic in the scalar and with no dependency; `FaerLdl`, faer's
+sparse LDLᵀ/LBLᵀ (feature `faer`), remains as an alternative and as the
+oracle of the test suite. Both are ordered by our AMD.
 
 ```rust
 use xingo_sparse::{Amd, BlockPartition, KktForm, KktSolver, Refinement, Regularization, SupernodalLdl, Triplets};
@@ -117,7 +118,7 @@ for (i, j) in [(0, 0), (0, 1), (1, 1), (1, 2)] {
 let k = t.to_csc()?;
 let form = KktForm::Augmented { n_primal: n, n_dual: m };
 
-let solver = SupernodalLdl::<f64>::default(); // or `FaerLdl::default()` with the `faer` feature
+let solver = SupernodalLdl::<f64>::default(); // the recommended backend; `FaerLdl` is the alternative
 let sym = solver.analyze(&k.pattern(), form, &Amd::default())?; // once per pattern
 let (num, inertia) = solver.factorize(&sym, &k, Regularization::default())?; // every iteration
 assert_eq!(inertia, form.expected_inertia(n + m)); // m positive, n negative pivots
@@ -217,12 +218,14 @@ Measured, not guessed (the decision log of the solver records each):
   of the wrong length).
 * **No `unsafe`** in this crate (faer has its own, audited, kernels).
 * **Two KKT backends, one policy.** `SupernodalLdl` (ours, generic, no
-  dependency) and `FaerLdl` (faer) share the regularization and the
-  refinement of the trait; on the 558 Netlib systems both give the
-  expected inertia and a residual against the unregularized `K` at most
-  `10⁻¹⁰`, and `SupernodalLdl` stores exactly faer's supernodal factor
-  under the same ordering, factorizing in 1.02× of faer's time (geometric
-  mean, ten largest Netlib) with faer's dense kernels.
+  dependency; recommended) and `FaerLdl` (faer; alternative and oracle)
+  share the regularization and the refinement of the trait; on the 558
+  Netlib systems both give the expected inertia and a residual against the
+  unregularized `K` at most `10⁻¹⁰`. Under the same ordering,
+  `SupernodalLdl` stores exactly faer's factor on the 84 supernodal
+  systems and a smaller one on the 474 simplicial ones, and factorizes in
+  1.02× of faer's time (geometric mean, ten largest Netlib) with faer's
+  dense kernels.
 
 ## Repository, issues and citation
 

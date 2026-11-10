@@ -105,8 +105,10 @@
 //! * **L1.5** (done) — row/column scaling [`Scaling`] by the policies of
 //!   [`Equilibration`] (§5.13); the KKT interface [`KktSolver`] with the
 //!   regularization policy and the iterative refinement shared by every
-//!   backend (§5.14); its v0.1 backend [`FaerLdl`] over faer's sparse
-//!   `LDLᵀ`/`LBLᵀ` ordered by our [`Amd`] (§5.15, feature `faer`); and the
+//!   backend (§5.14); the optional backend [`FaerLdl`] over faer's sparse
+//!   `LDLᵀ`/`LBLᵀ` ordered by our [`Amd`] (§5.15, feature `faer`; since
+//!   0.2.0 the recommended backend is the own [`SupernodalLdl`], §5.17,
+//!   D-0099); and the
 //!   dense kernels [`DenseKernel`], [`NaiveDense`] and `FaerDense`
 //!   (§5.16). The simplex uses none of it, and faer is not in the
 //!   solver's build: the workspace depends on this crate without default

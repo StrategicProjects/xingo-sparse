@@ -479,7 +479,7 @@ impl KktForm {
 /// ])
 /// .unwrap();
 /// let form = KktForm::Augmented { n_primal: 2, n_dual: 1 };
-/// let solver = SupernodalLdl::<f64>::default(); // or FaerLdl with the `faer` feature
+/// let solver = SupernodalLdl::<f64>::default(); // recommended; FaerLdl is the alternative
 /// let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
 /// let (num, inertia) = solver.factorize(&sym, &k, Regularization::default()).unwrap();
 /// assert_eq!(inertia, form.expected_inertia(3)); // (S6): 1 positive, 2 negative

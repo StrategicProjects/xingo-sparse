@@ -202,7 +202,7 @@
       </div>
       <div class="term" aria-hidden="true">
         <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">examples/kkt_ipm_step.rs</span></div>
-<pre><code><span class="c-kw">let</span> solver = <span class="c-ty">FaerLdl</span>::<span class="c-cmd">default</span>();
+<pre><code><span class="c-kw">let</span> solver = <span class="c-ty">SupernodalLdl</span>::&lt;<span class="c-ty">f64</span>&gt;::<span class="c-cmd">default</span>();
 <span class="c-cmt">// analyze once per pattern, ordered by our AMD</span>
 <span class="c-kw">let</span> sym = solver.<span class="c-cmd">analyze</span>(&amp;k.<span class="c-cmd">pattern</span>(), form, &amp;<span class="c-ty">Amd</span>::<span class="c-cmd">default</span>())?;
 <span class="c-cmt">// factorize every iteration, regularized</span>
@@ -225,10 +225,10 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
       <div class="grid f3">
         <div class="card"><div class="ic">▤</div><h3>The basis of a simplex method</h3><p>A dynamic LU with threshold Markowitz pivoting (Suhl &amp; Suhl), <strong>Forrest–Tomlin updates</strong> when one column changes, hypersparse FTRAN/BTRAN (Gilbert–Peierls reach, a density policy per call). The basis is never formed: it is a list of references into <code>[A | ±I]</code>. A reusable pivot sequence replays the last factorization on new values.</p></div>
         <div class="card"><div class="ic">⇅</div><h3>Fill-reducing orderings</h3><p>Our own <code>Amd</code> (Amestoy, Davis &amp; Duff) and <code>Colamd</code> (Davis, Gilbert, Larimore &amp; Ng) on one approximate-minimum-degree engine over a quotient graph, behind the <code>Ordering</code> trait on a value-free <code>Pattern</code>. The elimination-tree postorder puts the heaviest child last, so supernodes merge.</p></div>
-        <div class="card"><div class="ic">◩</div><h3>KKT systems of an interior-point method</h3><p><code>KktSolver</code> in the CHOLMOD shape: analyze once, factorize many, solve. Regularization (static shifts in the equilibrated matrix, dynamic pivot bumping, inertia check) and refinement by right-preconditioned GMRES are the trait's provided methods, so every backend shares them. Two backends: our own <code>SupernodalLdl</code> (elimination tree, relaxed supernodes, left-looking blocks on dense kernels, exact bump counts, generic in the scalar, no dependency) and <code>FaerLdl</code>, faer's sparse LDLᵀ; both ordered by our AMD.</p></div>
+        <div class="card"><div class="ic">◩</div><h3>KKT systems of an interior-point method</h3><p><code>KktSolver</code> in the CHOLMOD shape: analyze once, factorize many, solve. Regularization (static shifts in the equilibrated matrix, dynamic pivot bumping, inertia check) and refinement by right-preconditioned GMRES are the trait's provided methods, so every backend shares them. The recommended backend is our own <code>SupernodalLdl</code> (elimination tree, relaxed supernodes, left-looking blocks on dense kernels, exact bump counts, generic in the scalar, no dependency); <code>FaerLdl</code>, faer's sparse LDLᵀ, remains as the alternative and the oracle. Both are ordered by our AMD.</p></div>
       </div>
       <div class="pills" style="margin-top:22px">
-        <span class="pill">CscMatrix&lt;T&gt;</span><span class="pill">CsrMatrix&lt;T&gt;</span><span class="pill">SparseVec&lt;T&gt;</span><span class="pill">Triplets&lt;T&gt;</span><span class="pill">Pattern</span><span class="pill">BlockPartition</span><span class="pill">Lu&lt;T, U&gt;</span><span class="pill">ForrestTomlin</span><span class="pill">SymbolicLu</span><span class="pill">Amd</span><span class="pill">Colamd</span><span class="pill">Scaling</span><span class="pill">KktSolver</span><span class="pill">Regularization</span><span class="pill">Refinement</span><span class="pill">FaerLdl</span><span class="pill">DenseKernel</span>
+        <span class="pill">CscMatrix&lt;T&gt;</span><span class="pill">CsrMatrix&lt;T&gt;</span><span class="pill">SparseVec&lt;T&gt;</span><span class="pill">Triplets&lt;T&gt;</span><span class="pill">Pattern</span><span class="pill">BlockPartition</span><span class="pill">Lu&lt;T, U&gt;</span><span class="pill">ForrestTomlin</span><span class="pill">SymbolicLu</span><span class="pill">Amd</span><span class="pill">Colamd</span><span class="pill">Scaling</span><span class="pill">KktSolver</span><span class="pill">Regularization</span><span class="pill">Refinement</span><span class="pill">SupernodalLdl</span><span class="pill">FaerLdl</span><span class="pill">DenseKernel</span>
       </div>
       <p class="note">Every container and factorization is generic in the scalar <code>T: Real</code> (<code>f64</code> by default; double-double and quad-double are planned in a sibling crate). Without the default <code>faer</code> feature the crate has <em>no dependency at all</em>; that is how the Xingó solver builds it.</p>
     </div>
@@ -280,7 +280,7 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
                 <tr><td>Largest such residual</td><td class="num">9.4 × 10<sup>−11</sup></td></tr>
                 <tr><td>Refinement steps, median / maximum</td><td class="num">2 / 10</td></tr>
                 <tr><td>Non-finite factors or solutions reported silently</td><td class="num">0</td></tr>
-                <tr><td>Stored factor of <code>SupernodalLdl</code> equal to faer's supernodal one, same ordering</td><td class="num">558 / 558</td></tr>
+                <tr><td>Stored factor of <code>SupernodalLdl</code> equal to faer's on the supernodal systems, smaller on the simplicial ones (same ordering)</td><td class="num">84 / 84 · 474 / 474</td></tr>
                 <tr><td>Factorization time of <code>SupernodalLdl</code> with faer's kernels, over <code>FaerLdl</code> (ten largest, geometric mean)</td><td class="num">1.02×</td></tr>
               </tbody>
             </table>
