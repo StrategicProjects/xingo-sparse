@@ -5,6 +5,42 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [Unreleased]
+
+### Added
+
+* `SupernodalLdl` factorizes the **unregularized augmented system**
+  (`Regularization::none()`) with an `LBLᵀ` (Chapter 5.17, Algorithm M):
+  Bunch–Kaufman `1×1`/`2×2` pivots inside each supernode through
+  `DenseKernel::sytrf`, and *delayed pivots* — a column with no acceptable
+  pivot in its supernode (a dual leaf of the elimination tree, or a pivot
+  that is rounding noise or would make `L` grow past `1/u`) moves to the
+  parent supernode and is pivoted there, as in MA57. A zero pivot at a root
+  means the matrix is singular to working precision: `KktError::ZeroPivot`,
+  never a silent infinity. New options `SupernodalOptions::zero_pivot_tol`
+  (`10⁻¹⁴`, relative to the largest term that produced the pivot) and
+  `SupernodalOptions::pivot_threshold` (`u = 10⁻⁸`); new accessors
+  `NumericLdl::{is_pivoted, delayed, supernodes, rows}`, and
+  `NumericLdl::perm` returns the pivot order of the factor. `pivot_2x2` is
+  `true` on both columns of a `2×2` block; its off-diagonal is stored in
+  the block at `(k + 1, k)`. The regularized systems take the `LDLᵀ` of
+  0.2.0 unchanged (bit for bit on the 558 Netlib systems with `FaerDense`).
+* `NaiveDense::{gemm_sub, trsm_lower, syrk_sub}` run contiguous blocked
+  loops (`GEMM_BLOCK_ROWS`, `GEMM_BLOCK_K`) instead of per-entry sums:
+  `SupernodalLdl<f64, NaiveDense>` factorizes the ten largest Netlib
+  systems in 1.37× the time of `FaerLdl` (was 3.3×; worst 3.3×,
+  was 14.5×). The rounding of the naive kernels changes; the faer kernels
+  do not.
+
+### Measured, not changed
+
+* Fill of our `Amd` against METIS nested dissection (external tool) on 40
+  KKT systems: 0.97× on average (D11 of the solver's plan closed without
+  a nested dissection of our own).
+* A `DenseKernel` with a leading dimension (to avoid the scratch copies of
+  the supernodal kernel path) and `PANEL = 64` were measured and not
+  adopted: the scratch copies of the kernel path take 22–28 % of the factorization time with `FaerDense` on dfl001, fit2p and pilot87 (13 % with `NaiveDense`), an upper bound on what a strided kernel could save, and the change is a new public method of `DenseKernel`; left for L2 with the measurement. `PANEL = 64` gains 17 % on fit2p with faer's kernels and loses 11 % with the naive ones.
+
 ## [0.2.0] — 2026-11-10
 
 `SupernodalLdl` becomes the recommended KKT backend; `FaerLdl` stays as the

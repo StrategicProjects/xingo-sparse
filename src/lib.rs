@@ -89,7 +89,7 @@
 //! | `Inertia`, `Regularization<T>`, `Refinement<T>`, `RefineReport<T>`, `KktForm`, `KktSolver<T>`, `KktError` | the same (§5.14, L1.5), plus `Default` for the option structs, `Regularization::{none, relative_to, is_quasi_definite}`, `KktForm::expected_inertia`, `KktError::Structure`, [`EQUILIBRATION_PASSES`]; the augmented inertia reads `{positive: m, negative: n}`; L1.5b: `Regularization::scale` with [`ShiftScale`] (shifts in the equilibrated matrix by default), `KktError::NotFinite`, [`RefineWorkspace`] and `KktSolver::solve_refined_with`, refinement by GMRES |
 //! | `FaerLdl`, `FaerSymbolic`, `FaerNumeric<T>` (feature `faer`) | the same (§5.15, L1.5), plus read-only accessors |
 //! | `DenseBlock<T>`, `DenseKernel<T>`, `NaiveDense`, `FaerDense`, `DenseError` | the same (§5.16, L1.5); `sytrf` also returns its permutation and `2×2` marks |
-//! | `SupernodalOptions`, `SymbolicLdl`, `NumericLdl<T>`, `SupernodalLdl<T, K>` | the same (§5.17, L1.6a), plus `SupernodalOptions::supernodal_switch` (the simplicial/supernodal switch), the accessors `SymbolicLdl::{n_supernodes, relaxation_zeros, is_simplicial, check_invariants}` and `NumericLdl::{order, n_supernodes, perm, scale}`, `SupernodalLdl::kernel`, the constants `PANEL` and `RELAX_CUTOFFS`; the structs carry private fields the solves need (a numeric factor solves after its symbolic phase is dropped), and `diag`/`blocks` hold the factor of `P K_reg Pᵀ` in the caller's units; `pivot_2x2` is all `false` until the `LBLᵀ` of L1.6b |
+//! | `SupernodalOptions`, `SymbolicLdl`, `NumericLdl<T>`, `SupernodalLdl<T, K>` | the same (§5.17, L1.6a), plus `SupernodalOptions::supernodal_switch` (the simplicial/supernodal switch), the accessors `SymbolicLdl::{n_supernodes, relaxation_zeros, is_simplicial, check_invariants}` and `NumericLdl::{order, n_supernodes, perm, scale}`, `SupernodalLdl::kernel`, the constants `PANEL` and `RELAX_CUTOFFS`; the structs carry private fields the solves need (a numeric factor solves after its symbolic phase is dropped), and `diag`/`blocks` hold the factor of `P K_reg Pᵀ` in the caller's units. L1.6b: `SupernodalOptions::{zero_pivot_tol, pivot_threshold}`, `NumericLdl::{is_pivoted, delayed, supernodes, rows}` and `NumericLdl::perm` as the pivot order, for the `LBLᵀ` of the unregularized augmented system (Algorithm M, with delayed pivots: not in the contract, which foresaw intranodal pivots only) |
 //!
 //! ## 5.E What the tasks add
 //! * **L1.3** (done) — [`Perm`] and [`Pattern`] (§5.9), the orderings
@@ -136,8 +136,14 @@
 //!   without allocation; the engine of §5.11 rewritten over one
 //!   garbage-collected workspace (same output). `FaerLdl` stays as the
 //!   optional backend and the oracle.
-//! * **L1.6b** — the `2×2` pivots of Bunch–Kaufman (`LBLᵀ`) for the
-//!   unregularized augmented system, through `DenseKernel::sytrf`.
+//! * **L1.6b** (done) — the `LBLᵀ` of the unregularized augmented system in
+//!   [`SupernodalLdl`] (§5.17, Algorithm M): Bunch–Kaufman `1×1`/`2×2`
+//!   pivots inside each supernode through `DenseKernel::sytrf`, delayed
+//!   pivots to the parent supernode (MA57's scheme) for the columns with
+//!   no acceptable pivot, a zero pivot at a root reported as a singular
+//!   matrix; the regularized path untouched bit for bit. [`NaiveDense`]
+//!   with contiguous blocked loops (§5.16). Measured and not adopted:
+//!   nested dissection (our AMD's fill is 0.97× METIS's on average), a strided `DenseKernel`, `PANEL = 64`.
 //!
 //! ## Purpose (the first edition, unchanged)
 //! The revised simplex method (Chapter 6) works with the basis matrix `B`

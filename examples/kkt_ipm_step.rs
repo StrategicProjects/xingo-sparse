@@ -106,6 +106,33 @@ fn step<S: KktSolver<f64>>(
     independent
 }
 
+/// Without regularization the augmented system is indefinite, not
+/// quasi-definite: the same symbolic phase, but the factorization takes the
+/// LBLᵀ of Algorithm M (Bunch–Kaufman 1×1/2×2 pivots inside each supernode,
+/// delayed pivots where a supernode has none acceptable).
+fn unregularized_step(
+    own: &SupernodalLdl<f64>,
+    sym: &xingo_sparse::SymbolicLdl,
+    prob: &Problem<'_>,
+    d: &[f64],
+) {
+    let k = assemble(prob.a, d, prob.part);
+    let (num, inertia) = own
+        .factorize(sym, &k, Regularization::none())
+        .expect("nonsingular: A has full row rank");
+    assert_eq!(inertia, prob.form.expected_inertia(k.n_cols()));
+    let mut x = vec![0.0; prob.b.len()];
+    let rep = own.solve_refined(&num, &k, prob.b, &mut x, Refinement::default());
+    println!(
+        "[{}] unregularized LBLᵀ: {} 2×2 block(s), {} delayed pivot(s), residual {:.2e}",
+        own.name(),
+        num.pivot_2x2.iter().filter(|&&t| t).count() / 2,
+        num.delayed(),
+        rep.residual
+    );
+    assert!(num.is_pivoted() && rep.residual <= 1e-10);
+}
+
 fn main() {
     // The toy LP: min cᵀx, A x = b, x ≥ 0 with A of 3 × 5 (full row rank).
     let (m, n) = (3, 5);
@@ -179,6 +206,8 @@ fn main() {
     );
     let r1 = step(&own, &sym, &prob, &d1, "iteration 1", |num| num.bumped);
     let r2 = step(&own, &sym, &prob, &d2, "iteration 2", |num| num.bumped);
+
+    unregularized_step(&own, &sym, &prob, &d1);
 
     // The faer backend (Chapter 5.15) on the same systems.
     #[cfg(feature = "faer")]

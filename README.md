@@ -159,9 +159,10 @@ refined KKT solver with the own supernodal LDLᵀ and the faer backend.
 
 Out, by decision: a complete dense library; sparse matrix products, QR,
 SVD, eigenvalues; iterative solvers and preconditioners beyond the
-refinement loop; complex scalars; METIS or any C binding; GPU. Bartels–Golub
-updates and the `2×2` pivots of the own LDLᵀ (an LBLᵀ for the unregularized
-augmented system) are specified in the crate's contract and scheduled
+refinement loop; complex scalars; METIS or any C binding (nested dissection
+was measured against METIS as an external tool and not adopted: our AMD's
+fill is 0.97× METIS's on average over 40 KKT systems); GPU.
+Bartels–Golub updates are specified in the crate's contract and scheduled
 next.
 
 ## Known limitations
@@ -169,10 +170,22 @@ next.
 Measured, not guessed (the decision log of the solver records each):
 
 1. `SupernodalLdl` factorizes the two *regularized* systems with `1×1`
-   pivots (they are quasi-definite and need none); an *unregularized*
-   augmented system still needs `FaerLdl`'s intranodal Bunch–Kaufman,
-   which is `f64`-only. The `2×2` pivots of the own backend are the next
-   step.
+   pivots (they are quasi-definite and need none) and an *unregularized*
+   augmented system (`Regularization::none()`) with the `LBLᵀ` of
+   Chapter 5.17, Algorithm M: Bunch–Kaufman `1×1`/`2×2` pivots inside each
+   supernode and *delayed pivots* to the parent supernode when a column has
+   no acceptable pivot (MA57's scheme). Its zero test (`zero_pivot_tol`) and
+   growth threshold (`pivot_threshold`, `u = 10⁻⁸`) were calibrated on the
+   Netlib LPs: of the 279 unregularized augmented systems, 49 are
+   nonsingular (κ ≤ 10¹² by scipy) and all 49 factorize with the expected
+   inertia and a residual ≤ 10⁻¹⁰; the others are singular to working
+   precision (raw Netlib has dependent and empty rows) and get an explicit
+   `ZeroPivot`/`WrongInertia` or a small residual, never a silent infinity.
+   The delays pile up where the system is singular anyway (the end of an
+   interior-point method without regularization: up to 15 352 delayed
+   pivots in one system); the regularized path, which a running method
+   should use there, is untouched bit for bit. `FaerLdl`'s intranodal
+   Bunch–Kaufman has no delays and fails on 246 of the 279 systems.
 2. The default regularization (`ρ = 10⁻⁶`, `δ = 10⁻⁸` in the equilibrated
    matrix) was calibrated on the 93 Netlib LPs at three stages of an
    interior-point method (558 systems, plus 3 × 558 with other random
@@ -180,7 +193,16 @@ Measured, not guessed (the decision log of the solver records each):
    the default refinement in all but one case (that one at `1.6·10⁻¹⁰`). A
    running interior-point method will review `ρ, δ`.
 3. Our `Amd` takes about 1.15× the time of faer's AMD (geometric mean on the
-   ten largest Netlib systems), with the same fill.
+   ten largest Netlib systems), with the same fill. Against METIS's nested
+   dissection (`ndmetis` 5.1.0, external tool) its fill is 0.97× on
+   average over 40 KKT systems (ten largest Netlib, five Kennington, five
+   MIPLIB 2017 root LPs, normal and augmented), from 0.43× to
+   1.63× (pds-20's normal equations); no nested dissection is planned
+   unless an interior-point method meets more cases like that one.
+8. `SupernodalLdl<f64, NaiveDense>` (no dependency) factorizes the ten
+   largest Netlib systems in 1.37× the time of `FaerLdl` (geometric
+   mean; worst 3.3×): the dense kernels are plain blocked loops
+   with no SIMD. With `FaerDense` the ratio is 1.00×.
 4. `FaerLdl`'s count of bumped pivots is exact for the simplicial
    structure; for the supernodal one, negative-sign bumps are counted by
    value and may be overcounted (faer counts only the positive ones;

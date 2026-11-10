@@ -284,6 +284,8 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
                 <tr><td>Non-finite factors or solutions reported silently</td><td class="num">0</td></tr>
                 <tr><td>Stored factor of <code>SupernodalLdl</code> equal to faer's on the supernodal systems, smaller on the simplicial ones (same ordering)</td><td class="num">84 / 84 · 474 / 474</td></tr>
                 <tr><td>Factorization time of <code>SupernodalLdl</code> with faer's kernels, over <code>FaerLdl</code> (ten largest, geometric mean)</td><td class="num">1.02×</td></tr>
+                <tr><td>… with the dependency-free <code>NaiveDense</code> kernels, after the blocked loops of 0.3</td><td class="num">1.37× (was 3.3×)</td></tr>
+                <tr><td>Unregularized augmented systems (<code>Regularization::none()</code>, Bunch–Kaufman + delayed pivots): nonsingular ones factorized with the expected inertia and residual ≤ 10<sup>−10</sup></td><td class="num">49 / 49</td></tr>
               </tbody>
             </table>
           </div>
@@ -369,12 +371,12 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
       <div class="card scroll">
         <table class="cmp">
           <tbody>
-            <tr><td><code>SupernodalLdl</code> factorizes the two regularized systems with 1×1 pivots; an unregularized augmented system still needs <code>FaerLdl</code>'s intranodal Bunch–Kaufman, which is <code>f64</code>-only. The 2×2 pivots of the own backend come next.</td></tr>
+            <tr><td><code>SupernodalLdl</code> factorizes an unregularized augmented system with Bunch–Kaufman 1×1/2×2 pivots inside each supernode and delayed pivots (MA57's scheme). On raw Netlib most such systems are singular to working precision (dependent and empty rows): of the 279, 49 are nonsingular and all 49 factorize with the expected inertia and a residual ≤ 10<sup>−10</sup>; the rest get an explicit error. Delays pile up where the system is singular anyway (up to 15 352 in one end-of-method system); use the regularized path there.</td></tr>
             <tr><td>The default regularization (ρ = 10<sup>−6</sup>, δ = 10<sup>−8</sup> in the equilibrated matrix) was calibrated on Netlib, 558 systems plus 3 × 558 with other random diagonals; one of those extra systems reached 1.6 × 10<sup>−10</sup> with the default refinement. A running interior-point method will review ρ, δ.</td></tr>
             <tr><td>Our AMD takes about 1.15× the time of faer's with the same fill.</td></tr>
             <tr><td><code>FaerLdl</code>'s count of bumped pivots is exact for simplicial factors; for supernodal ones, negative-sign bumps are counted by value and may be overcounted (faer counts the positive ones only). <code>SupernodalLdl</code> counts both signs exactly.</td></tr>
             <tr><td>The LU declares singular a column whose entries are all at or below the absolute pivot tolerance (10<sup>−10</sup>) without scaling; sherman3 needs <code>Scaling</code> first. Refactorization speeds up dense factors less than 1.5×.</td></tr>
-            <tr><td>Bartels–Golub updates and the 2×2 pivots of the own LDLᵀ are specified in the crate's contract and scheduled next.</td></tr>
+            <tr><td>Bartels–Golub updates are specified in the crate's contract and scheduled next. Nested dissection was measured against METIS (external tool, 40 KKT systems: our AMD's fill is 0.97× on average, 1.63× at worst) and not adopted.</td></tr>
           </tbody>
         </table>
       </div>

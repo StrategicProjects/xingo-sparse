@@ -58,6 +58,20 @@
 //! C)`: `C ← C − A Aᵀ` on the lower triangle of `C`. Sums run over `k` in
 //! increasing order.
 //!
+//! *Loop order of [`NaiveDense`] (task L1.6b).* The first edition summed
+//! each entry of the result in place (`c_ij ← c_ij − Σ_k a_ik b_jk`), which
+//! reads `A` across its rows — a stride of `rows` between consecutive `k`
+//! — and made `SupernodalLdl<f64, NaiveDense>` 14× slower than faer's
+//! kernels on dfl001 (D-0099). The kernels now run their innermost loop
+//! down one column (contiguous: an `axpy` on the column of `C` with the
+//! column `k` of `A` scaled by `b_jk`), in blocks of [`GEMM_BLOCK_ROWS`]
+//! rows and [`GEMM_BLOCK_K`] columns of `A` so that the block of `A` in
+//! use stays in cache while every column of `C` passes over it. No SIMD
+//! and no `unsafe`: plain slices, which the compiler vectorizes. The
+//! additions still run over `k` in increasing order, so the result is
+//! deterministic; its rounding differs from the first edition's (the sum
+//! is accumulated into `c_ij` instead of formed apart and subtracted once).
+//!
 //! ## Invariants
 //! (D1) After `potrf`, `L Lᵀ = A` (lower triangle) to working precision.
 //! (D2) After `sytrf`, `P A Pᵀ = L B Lᵀ` to working precision, `B` has
@@ -178,6 +192,15 @@ pub trait DenseKernel<T: Real> {
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NaiveDense;
+
+/// Rows of `C` and `A` handled per block in [`NaiveDense::gemm_sub`] and
+/// [`NaiveDense::syrk_sub`] (a cache-blocking size, not a numerical
+/// threshold): `GEMM_BLOCK_ROWS × GEMM_BLOCK_K` entries of `A` — 128 KiB
+/// in `f64` — stay in cache while the columns of `C` pass over them.
+pub const GEMM_BLOCK_ROWS: usize = 256;
+/// Columns of `A` (the summation index `k`) per block; see
+/// [`GEMM_BLOCK_ROWS`].
+pub const GEMM_BLOCK_K: usize = 64;
 
 /// Bunch & Kaufman's `α = (1 + √17)/8` (a constant of Algorithm B, not a
 /// tuning knob: it minimizes the growth bound).
@@ -343,21 +366,39 @@ impl<T: Real> DenseKernel<T> for NaiveDense {
     fn trsm_lower(&self, l: &DenseBlock<T>, b: &mut DenseBlock<T>, transpose: bool) {
         let n = l.square().expect("trsm_lower: L must be square");
         assert!(b.is_consistent(), "trsm_lower: B is inconsistent");
+        let rows = b.rows;
         if transpose {
-            // X Lᵀ = B: row i of X solves L xᵢ = bᵢ (forward substitution).
+            // X Lᵀ = B: row i of X solves L xᵢ = bᵢ (forward substitution),
+            // all rows at once, column by column of B: column j of X is
+            // (b_j − Σ_{k<j} l_jk x_k) / l_jj — contiguous axpys.
             assert_eq!(b.cols, n, "trsm_lower: B must have n columns");
-            for i in 0..b.rows {
-                for j in 0..n {
-                    let s = b.get(i, j) - (0..j).map(|k| b.get(i, k) * l.get(j, k)).sum::<T>();
-                    b.set(i, j, s / l.get(j, j));
+            for j in 0..n {
+                let (done, rest) = b.data.split_at_mut(j * rows);
+                let xj = &mut rest[..rows];
+                for k in 0..j {
+                    let t = l.get(j, k);
+                    for (x, &y) in xj.iter_mut().zip(&done[k * rows..(k + 1) * rows]) {
+                        *x -= y * t;
+                    }
+                }
+                let d = l.get(j, j);
+                for x in xj {
+                    *x = *x / d;
                 }
             }
         } else {
-            assert_eq!(b.rows, n, "trsm_lower: B must have n rows");
+            // L X = B, column c of B: right-looking forward substitution,
+            // the update of the rows below k contiguous.
+            assert_eq!(rows, n, "trsm_lower: B must have n rows");
             for c in 0..b.cols {
-                for i in 0..n {
-                    let s = b.get(i, c) - (0..i).map(|k| l.get(i, k) * b.get(k, c)).sum::<T>();
-                    b.set(i, c, s / l.get(i, i));
+                let col = &mut b.data[c * n..(c + 1) * n];
+                for k in 0..n {
+                    let x = col[k] / l.get(k, k);
+                    col[k] = x;
+                    let (_, below) = col.split_at_mut(k + 1);
+                    for (y, &lik) in below.iter_mut().zip(&l.data[k + 1 + k * n..(k + 1) * n]) {
+                        *y -= lik * x;
+                    }
                 }
             }
         }
@@ -373,11 +414,26 @@ impl<T: Real> DenseKernel<T> for NaiveDense {
                 && c.cols == b.rows,
             "gemm_sub: dimensions do not agree"
         );
-        for j in 0..c.cols {
-            for i in 0..c.rows {
-                let s = (0..a.cols).map(|k| a.get(i, k) * b.get(j, k)).sum::<T>();
-                c.set(i, j, c.get(i, j) - s);
+        let (rows, kk) = (a.rows, a.cols);
+        let mut i0 = 0;
+        while i0 < rows {
+            let i1 = (i0 + GEMM_BLOCK_ROWS).min(rows);
+            let mut k0 = 0;
+            while k0 < kk {
+                let k1 = (k0 + GEMM_BLOCK_K).min(kk);
+                for j in 0..c.cols {
+                    let cj = &mut c.data[j * rows + i0..j * rows + i1];
+                    for k in k0..k1 {
+                        let t = b.data[j + k * b.rows];
+                        let ak = &a.data[k * rows + i0..k * rows + i1];
+                        for (x, &av) in cj.iter_mut().zip(ak) {
+                            *x -= av * t;
+                        }
+                    }
+                }
+                k0 = k1;
             }
+            i0 = i1;
         }
     }
 
@@ -387,11 +443,21 @@ impl<T: Real> DenseKernel<T> for NaiveDense {
             a.is_consistent() && a.rows == n,
             "syrk_sub: dimensions do not agree"
         );
-        for j in 0..n {
-            for i in j..n {
-                let s = (0..a.cols).map(|k| a.get(i, k) * a.get(j, k)).sum::<T>();
-                c.set(i, j, c.get(i, j) - s);
+        let kk = a.cols;
+        let mut k0 = 0;
+        while k0 < kk {
+            let k1 = (k0 + GEMM_BLOCK_K).min(kk);
+            for j in 0..n {
+                let cj = &mut c.data[j * n + j..(j + 1) * n];
+                for k in k0..k1 {
+                    let t = a.data[j + k * n];
+                    let ak = &a.data[k * n + j..(k + 1) * n];
+                    for (x, &av) in cj.iter_mut().zip(ak) {
+                        *x -= av * t;
+                    }
+                }
             }
+            k0 = k1;
         }
     }
 
