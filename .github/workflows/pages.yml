@@ -1,0 +1,51 @@
+name: pages
+
+# Publishes the static landing page in site/ and the API reference (rustdoc,
+# with the `faer` feature so that FaerLdl and FaerDense appear) under /api to
+# GitHub Pages on every push to main of the stand-alone mirror. Pages must be
+# set to "GitHub Actions" as its source (Settings → Pages). Excluded from the
+# published package together with site/.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: API reference
+        run: |
+          cargo doc --no-deps --all-features
+          rm -rf site/api
+          cp -R target/doc site/api
+      - name: Disable Jekyll
+        run: touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

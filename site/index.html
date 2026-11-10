@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>xingo-sparse — sparse linear algebra for optimization solvers, in pure Rust</title>
+<meta name="description" content="A Rust crate with the factorizations a simplex method and an interior-point method need: a dynamic LU with Forrest–Tomlin updates and hypersparse solves, AMD and COLAMD orderings, scaling, and a regularized, refined KKT solver. Literate, deterministic, no unsafe, no C." />
+<meta property="og:title" content="xingo-sparse — sparse linear algebra for optimization solvers" />
+<meta property="og:description" content="LU for simplex bases with Forrest–Tomlin updates, AMD/COLAMD orderings, scaling and regularized KKT solvers for interior-point methods. Pure Rust, literate, deterministic." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://strategicprojects.github.io/xingo-sparse/" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%96%A6%3C/text%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg-soft: #121a33;
+    --card: #16203f;
+    --border: #263457;
+    --fg: #e8edf7;
+    --muted: #9fb0d0;
+    --brand: #3fa7ff;
+    --brand-2: #29c7ac;
+    --accent: #ffb14e;
+    --code-bg: #0d1428;
+    --shadow: 0 12px 40px rgba(0,0,0,.35);
+    --radius: 16px;
+    --maxw: 1080px;
+    --cell: #3987e5;
+    --fill: #d95926;
+    --grid: #263457;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fe;
+      --bg-soft: #eef2fb;
+      --card: #ffffff;
+      --border: #dbe3f4;
+      --fg: #10192e;
+      --muted: #56648a;
+      --code-bg: #0d1428;
+      --shadow: 0 12px 36px rgba(30,45,90,.12);
+      --cell: #2a78d6;
+      --fill: #eb6834;
+      --grid: #e6ebf7;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg);
+    background:
+      radial-gradient(1100px 600px at 12% -8%, rgba(63,167,255,.18), transparent 60%),
+      radial-gradient(900px 500px at 96% 4%, rgba(41,199,172,.16), transparent 55%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--brand-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 22px; }
+
+  header.nav {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 62px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.02em; font-size: 1.1rem; }
+  .brand .logo { font-size: 1.35rem; color: var(--brand); }
+  .nav-links { display: flex; gap: 22px; align-items: center; }
+  .nav-links a { color: var(--muted); font-weight: 600; font-size: .95rem; }
+  .nav-links a:hover { color: var(--fg); text-decoration: none; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-radius: 12px; font-weight: 700; font-size: .95rem;
+    border: 1px solid var(--border); color: var(--fg); background: var(--card);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); box-shadow: var(--shadow); }
+  .btn.primary { background: linear-gradient(135deg, var(--brand), #5b73ff); color: #fff; border: none; }
+  @media (max-width: 720px) { .nav-links a.hide-sm { display: none; } }
+
+  .hero { padding: 74px 0 40px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--brand-2); background: color-mix(in srgb, var(--brand-2) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--brand-2) 30%, transparent);
+    padding: 6px 12px; border-radius: 999px;
+  }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.6rem); line-height: 1.05; letter-spacing: -.03em; margin: 18px 0 14px; }
+  h1 .grad { background: linear-gradient(120deg, var(--brand), var(--brand-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 1.18rem; color: var(--muted); max-width: 46ch; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 26px; }
+  .badges img { height: 22px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 40px; align-items: center; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+
+  .term {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .term-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .term-title { margin-left: 8px; color: #7f8bb0; font: 600 .82rem ui-monospace, monospace; }
+  pre { margin: 0; padding: 18px 18px 22px; overflow-x: auto; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; }
+  pre code { color: #d7e0f5; }
+  p code, li code, td code { background: color-mix(in srgb, var(--brand) 12%, transparent); padding: 1px 6px; border-radius: 6px; font-size: .9em; }
+  .c-prompt { color: #6ee7c8; } .c-flag { color: #ffb14e; } .c-cmd { color: #8ea2ff; } .c-cmt { color: #6b779b; } .c-ok { color: #59d99a; }
+  .c-str { color: #ffb14e; } .c-ty { color: #6ee7c8; } .c-kw { color: #c9a5ff; }
+
+  section { padding: 56px 0; }
+  section.alt { background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  h2 { font-size: clamp(1.6rem, 3.4vw, 2.2rem); letter-spacing: -.02em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 30px; max-width: 66ch; }
+
+  .grid { display: grid; gap: 18px; }
+  .grid.f3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.f2 { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 860px) { .grid.f3, .grid.f2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px; transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+  }
+  .card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--brand) 40%, var(--border)); }
+  .card .ic { font-size: 1.5rem; }
+  .card h3 { margin: 12px 0 6px; font-size: 1.1rem; letter-spacing: -.01em; }
+  .card p { margin: 0; color: var(--muted); font-size: .96rem; }
+  .card ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: .94rem; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .pill { font: 600 .82rem ui-monospace, monospace; padding: 6px 11px; border-radius: 999px; background: color-mix(in srgb, var(--brand) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent); color: var(--fg); }
+
+  .panel { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 10px; }
+
+  table.cmp { width: 100%; border-collapse: collapse; font-size: .94rem; }
+  table.cmp th, table.cmp td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.cmp th { color: var(--muted); font-weight: 700; }
+  table.cmp td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+
+  .viz { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow); }
+  .viz h3 { margin: 0 0 2px; font-size: 1.1rem; letter-spacing: -.01em; }
+  .viz .cap { margin: 0 0 14px; color: var(--muted); font-size: .92rem; }
+  .viz svg { display: block; width: 100%; height: auto; }
+  .viz text { font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--muted); }
+  .viz text.t { fill: var(--fg); font-weight: 700; font-size: 13px; }
+  .viz text.m { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; font-size: .88rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+  .key.k1 { background: var(--cell); } .key.k2 { background: var(--fill); }
+
+  footer { padding: 40px 0 60px; color: var(--muted); border-top: 1px solid var(--border); }
+  .foot-inner { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center; }
+  .foot-links { display: flex; gap: 18px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap nav-inner">
+    <div class="brand"><span class="logo">▦</span> xingo-sparse</div>
+    <nav class="nav-links">
+      <a class="hide-sm" href="#entry">Entry points</a>
+      <a class="hide-sm" href="#measured">Measured</a>
+      <a class="hide-sm" href="#design">Design</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a class="hide-sm" href="#limits">Limitations</a>
+      <a class="hide-sm" href="api/xingo_sparse/">API</a>
+      <a class="btn" href="https://github.com/StrategicProjects/xingo-sparse">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow">◆ Rust · sparse linear algebra</span>
+        <h1>The factorizations an <span class="grad">optimization solver</span> cannot do without.</h1>
+        <p class="lead">A dynamic LU for simplex bases with Forrest–Tomlin updates and hypersparse solves, our own AMD and COLAMD, scaling, and a regularized, refined KKT solver for interior-point methods. Pure Rust, written as a book, deterministic to the bit.</p>
+        <div class="badges">
+          <a href="https://github.com/StrategicProjects/xingo-sparse/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/StrategicProjects/xingo-sparse/actions/workflows/ci.yml/badge.svg"></a>
+          <a href="https://crates.io/crates/xingo-sparse"><img alt="crates.io" src="https://img.shields.io/crates/v/xingo-sparse.svg"></a>
+          <a href="https://docs.rs/xingo-sparse"><img alt="docs.rs" src="https://docs.rs/xingo-sparse/badge.svg"></a>
+          <img alt="MSRV 1.90" src="https://img.shields.io/badge/MSRV-1.90-blue.svg">
+          <img alt="License MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg">
+          <img alt="No unsafe" src="https://img.shields.io/badge/unsafe-forbidden-brightgreen.svg">
+        </div>
+        <div class="cta">
+          <a class="btn primary" href="#install">Get started →</a>
+          <a class="btn" href="api/xingo_sparse/">API reference</a>
+          <a class="btn" href="https://github.com/StrategicProjects/xingo-sparse">GitHub ★</a>
+        </div>
+      </div>
+      <div class="term" aria-hidden="true">
+        <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">examples/kkt_ipm_step.rs</span></div>
+<pre><code><span class="c-kw">let</span> solver = <span class="c-ty">FaerLdl</span>::<span class="c-cmd">default</span>();
+<span class="c-cmt">// analyze once per pattern, ordered by our AMD</span>
+<span class="c-kw">let</span> sym = solver.<span class="c-cmd">analyze</span>(&amp;k.<span class="c-cmd">pattern</span>(), form, &amp;<span class="c-ty">Amd</span>::<span class="c-cmd">default</span>())?;
+<span class="c-cmt">// factorize every iteration, regularized</span>
+<span class="c-kw">let</span> (num, inertia) = solver.<span class="c-cmd">factorize</span>(&amp;sym, &amp;k, <span class="c-ty">Regularization</span>::<span class="c-cmd">default</span>())?;
+<span class="c-cmt">// solve, then refine against the *unregularized* K</span>
+<span class="c-kw">let</span> report = solver.<span class="c-cmd">solve_refined</span>(&amp;num, &amp;k, &amp;b, &amp;<span class="c-kw">mut</span> x, <span class="c-ty">Refinement</span>::<span class="c-cmd">default</span>());
+
+<span class="c-prompt">$</span> <span class="c-cmd">cargo</span> run --example kkt_ipm_step
+inertia (+, −, 0) = (3, 5, 0), expected (3, 5, 0); 0 pivot(s) bumped
+refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recomputed)
+<span class="c-ok">ok</span></code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="entry" class="alt">
+    <div class="wrap">
+      <h2>Three entry points, one layer</h2>
+      <p class="sub">Not a general linear algebra library: no products, QR, SVD or eigenvalues. What is here is what a simplex method and an interior-point method need and the general libraries do not offer.</p>
+      <div class="grid f3">
+        <div class="card"><div class="ic">▤</div><h3>The basis of a simplex method</h3><p>A dynamic LU with threshold Markowitz pivoting (Suhl &amp; Suhl), <strong>Forrest–Tomlin updates</strong> when one column changes, hypersparse FTRAN/BTRAN (Gilbert–Peierls reach, a density policy per call). The basis is never formed: it is a list of references into <code>[A | ±I]</code>. A reusable pivot sequence replays the last factorization on new values.</p></div>
+        <div class="card"><div class="ic">⇅</div><h3>Fill-reducing orderings</h3><p>Our own <code>Amd</code> (Amestoy, Davis &amp; Duff) and <code>Colamd</code> (Davis, Gilbert, Larimore &amp; Ng) on one approximate-minimum-degree engine over a quotient graph, behind the <code>Ordering</code> trait on a value-free <code>Pattern</code>. The elimination-tree postorder puts the heaviest child last, so supernodes merge.</p></div>
+        <div class="card"><div class="ic">◩</div><h3>KKT systems of an interior-point method</h3><p><code>KktSolver</code> in the CHOLMOD shape: analyze once, factorize many, solve. Regularization (static shifts in the equilibrated matrix, dynamic pivot bumping, inertia check) and refinement by right-preconditioned GMRES are the trait's provided methods, so every backend shares them. The 0.1 backend is <code>FaerLdl</code>, faer's sparse LDLᵀ ordered by our AMD.</p></div>
+      </div>
+      <div class="pills" style="margin-top:22px">
+        <span class="pill">CscMatrix&lt;T&gt;</span><span class="pill">CsrMatrix&lt;T&gt;</span><span class="pill">SparseVec&lt;T&gt;</span><span class="pill">Triplets&lt;T&gt;</span><span class="pill">Pattern</span><span class="pill">BlockPartition</span><span class="pill">Lu&lt;T, U&gt;</span><span class="pill">ForrestTomlin</span><span class="pill">SymbolicLu</span><span class="pill">Amd</span><span class="pill">Colamd</span><span class="pill">Scaling</span><span class="pill">KktSolver</span><span class="pill">Regularization</span><span class="pill">Refinement</span><span class="pill">FaerLdl</span><span class="pill">DenseKernel</span>
+      </div>
+      <p class="note">Every container and factorization is generic in the scalar <code>T: Real</code> (<code>f64</code> by default; double-double and quad-double are planned in a sibling crate). Without the default <code>faer</code> feature the crate has <em>no dependency at all</em>; that is how the Xingó solver builds it.</p>
+    </div>
+  </section>
+
+  <section id="measured">
+    <div class="wrap">
+      <h2>Measured, not guessed</h2>
+      <p class="sub">Each number below comes from the decision log of the solver this crate was built for, with the harness that produced it. The oracles (SuiteSparse, SuperLU/scipy, faer) are development dependencies only.</p>
+      <div class="grid f2">
+        <div class="viz">
+          <h3>Fill of our AMD against SuiteSparse's</h3>
+          <p class="cap">nnz(L) of the Cholesky factor, ours over SuiteSparse's, on the 93 Netlib normal equations <code>A Aᵀ</code> and Harwell–Boeing matrices. The acceptance line is 1.05.</p>
+          <div class="legend"><span><i class="key k1"></i>ours / SuiteSparse</span><span><i class="key k2"></i>1.05 acceptance</span></div>
+          <svg viewBox="0 0 520 220" role="img" aria-label="Bar summary: geometric mean 0.999, worst case 1.029, acceptance 1.05, over 331 comparisons.">
+            <line x1="60" y1="30" x2="60" y2="180" stroke="var(--grid)"/>
+            <line x1="60" y1="180" x2="500" y2="180" stroke="var(--grid)"/>
+            <!-- scale: ratio 0.90 → x=60, 1.10 → x=500 -->
+            <line x1="390" y1="30" x2="390" y2="180" stroke="var(--fill)" stroke-dasharray="4 4"/>
+            <text x="390" y="22" text-anchor="middle" class="m">1.05</text>
+            <text x="280" y="196" text-anchor="middle" class="m">1.00</text>
+            <text x="60" y="196" text-anchor="middle" class="m">0.90</text>
+            <text x="500" y="196" text-anchor="middle" class="m">1.10</text>
+            <line x1="280" y1="30" x2="280" y2="180" stroke="var(--grid)"/>
+            <text x="8" y="62" class="t">AMD, mean</text>
+            <rect x="60" y="50" width="217.8" height="16" rx="3" fill="var(--cell)"/>
+            <text x="284" y="63" class="m">0.999</text>
+            <text x="8" y="100" class="t">AMD, worst</text>
+            <rect x="60" y="88" width="283.8" height="16" rx="3" fill="var(--cell)"/>
+            <text x="350" y="101" class="m">1.029</text>
+            <text x="8" y="138" class="t">COLAMD, mean</text>
+            <rect x="60" y="126" width="220.2" height="16" rx="3" fill="var(--cell)"/>
+            <text x="286" y="139" class="m">1.000</text>
+            <text x="8" y="176" class="t">COLAMD, worst</text>
+            <rect x="60" y="164" width="240.7" height="16" rx="3" fill="var(--cell)"/>
+            <text x="307" y="177" class="m">1.009</text>
+          </svg>
+          <p class="note">331 comparisons, none above 1.05. Factorization time of faer with our ordering: 0.98× faer's own AMD (geometric mean, ten largest Netlib); ordering time 1.25× faer's.</p>
+        </div>
+        <div class="viz">
+          <h3>KKT systems at three stages of an interior-point method</h3>
+          <p class="cap">93 Netlib LPs × normal equations and augmented system × a diagonal <code>D</code> at the start (10<sup>±0.5</sup>), the middle (10<sup>±4</sup>) and the end (10<sup>±8..10</sup>) of the method: 558 systems, default regularization and refinement.</p>
+          <div class="scroll">
+            <table class="cmp">
+              <thead><tr><th>Property</th><th class="num">Systems</th></tr></thead>
+              <tbody>
+                <tr><td>Factorized with the expected inertia, no pivot bumped</td><td class="num">558 / 558</td></tr>
+                <tr><td>Residual against the <em>unregularized</em> K ≤ 10<sup>−10</sup> after refinement</td><td class="num">558 / 558</td></tr>
+                <tr><td>Largest such residual</td><td class="num">9.4 × 10<sup>−11</sup></td></tr>
+                <tr><td>Refinement steps, median / maximum</td><td class="num">2 / 10</td></tr>
+                <tr><td>Non-finite factors or solutions reported silently</td><td class="num">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">Why it matters: a shift δ chosen in absolute units fails 32 of these systems at the end of the method; chosen in the equilibrated matrix it is relative to each row and fails none. The refinement removes the shifts' bias.</p>
+        </div>
+      </div>
+      <div class="grid f3" style="margin-top:18px">
+        <div class="card"><div class="ic">≡</div><h3>Bit for bit</h3><p>The LU is the one inside the Xingó simplex. Every change to this crate is accepted only if the solver's results on MIPLIB and Netlib instances are identical, key by key, outside timings.</p></div>
+        <div class="card"><div class="ic">⟳</div><h3>Refactorization that reuses the pivots</h3><p>A recorded pivot sequence replayed on new values: 1.8–2.3× faster on sparse bases, 1.2–1.5× on dense ones (it saves the analysis, not the arithmetic). Fallback to a fresh factorization when a pivot fails the threshold.</p></div>
+        <div class="card"><div class="ic">∅</div><h3>No allocation in the loop</h3><p>A second <code>solve</code> on the same factor and a refinement with a reused <code>RefineWorkspace</code> allocate nothing, measured with a counting allocator over 186 systems.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="design" class="alt">
+    <div class="wrap">
+      <h2>Written as a book</h2>
+      <p class="sub">Every module is a chapter: purpose, notation, the algorithm in numbered steps, invariants, references. The crate documentation <em>is</em> the text, and Chapter 5 of the solver's book includes these sources verbatim.</p>
+      <div class="grid f3">
+        <div class="card"><div class="ic">§</div><h3>Invariants that run</h3><p>Each invariant of a chapter is a <code>debug_assert!</code> or a <code>check_invariants()</code>; property-based tests (proptest) replay them on random inputs, including the agreement between two constructions of the same object.</p></div>
+        <div class="card"><div class="ic">🧾</div><h3>Deterministic</h3><p>Same input, same options, same result, bit for bit: no hashing, no threads, no allocation-order dependence in the numerical paths. The faer backend runs sequentially for the same reason.</p></div>
+        <div class="card"><div class="ic">📄</div><h3>Read, not copied</h3><p>HiGHS, SuiteSparse (AMD, COLAMD, CHOLMOD) and faer were studied as references and oracles; the code is written from the papers: Suhl &amp; Suhl, Forrest &amp; Tomlin, Gilbert &amp; Peierls, Amestoy–Davis–Duff, Altman &amp; Gondzio, Arioli–Duff–Gratton–Pralet, Liu.</p></div>
+        <div class="card"><div class="ic">⚠️</div><h3>Errors, not panics, on data</h3><p>Malformed containers, singular bases, wrong inertia and non-finite factors come back as errors carrying what the caller needs to recover. Panics are reserved for contract violations such as a vector of the wrong length.</p></div>
+        <div class="card"><div class="ic">🦀</div><h3>No <code>unsafe</code>, no C</h3><p><code>unsafe_code</code> is denied in the crate. The only dependency, faer (MIT), is pure Rust and optional; nothing GPL or LGPL is used or linked, and there is no C binding to build.</p></div>
+        <div class="card"><div class="ic">🔁</div><h3>Analyze once, factorize many</h3><p>The symbolic phase of the KKT solver and the pivot sequence of the LU are computed once per pattern and reused while only the values change, which is every iteration of either method.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install &amp; run</h2>
+      <p class="sub">Rust 1.90 or later. The README's examples are compiled as doc-tests, so they cannot drift from the API; changes between versions are in the <a href="https://github.com/StrategicProjects/xingo-sparse/blob/main/CHANGELOG.md">changelog</a>.</p>
+      <div class="panel" style="margin-bottom:18px">
+<pre><code><span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse                         <span class="c-cmt"># with the faer backend</span>
+<span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse --no-default-features   <span class="c-cmt"># no dependency at all</span></code></pre>
+      </div>
+      <div class="grid f2">
+        <div>
+          <div class="panel">
+<pre><code><span class="c-cmt">// a simplex basis: factorize, solve, exchange one column</span>
+<span class="c-kw">use</span> xingo_sparse::{<span class="c-ty">Col</span>, <span class="c-ty">ColumnRef</span>, <span class="c-ty">Lu</span>, <span class="c-ty">LuFactor</span>, <span class="c-ty">Row</span>, <span class="c-ty">Sign</span>, <span class="c-ty">SparseVec</span>};
+
+<span class="c-kw">let</span> <span class="c-kw">mut</span> heading = vec![<span class="c-ty">ColumnRef</span>::<span class="c-cmd">Structural</span>(<span class="c-ty">Col</span>(<span class="c-flag">0</span>)),
+                       <span class="c-ty">ColumnRef</span>::<span class="c-cmd">Logical</span>(<span class="c-ty">Row</span>(<span class="c-flag">1</span>), <span class="c-ty">Sign</span>::Plus)];
+<span class="c-kw">let</span> <span class="c-kw">mut</span> lu = <span class="c-ty">Lu</span>::&lt;<span class="c-ty">f64</span>&gt;::<span class="c-cmd">default</span>();   <span class="c-cmt">// Forrest–Tomlin by default</span>
+lu.<span class="c-cmd">factorize</span>(&amp;(heading.<span class="c-cmd">as_slice</span>(), &amp;a))?;
+
+<span class="c-kw">let</span> <span class="c-kw">mut</span> x = <span class="c-ty">SparseVec</span>::<span class="c-cmd">from_dense</span>(&amp;[<span class="c-flag">4.0</span>, <span class="c-flag">5.0</span>]);
+lu.<span class="c-cmd">ftran</span>(&amp;<span class="c-kw">mut</span> x);                 <span class="c-cmt">// x = B⁻¹ b</span>
+
+lu.<span class="c-cmd">ftran_for_update</span>(&amp;<span class="c-kw">mut</span> alpha);  <span class="c-cmt">// the entering column</span>
+lu.<span class="c-cmd">update</span>(<span class="c-flag">1</span>, alpha.<span class="c-cmd">get</span>(<span class="c-flag">1</span>))?;      <span class="c-cmt">// Updated, or RefactorNeeded</span></code></pre>
+          </div>
+        </div>
+        <div>
+          <div class="panel">
+<pre><code><span class="c-cmt">// an ordering and the fill it yields</span>
+<span class="c-kw">use</span> xingo_sparse::{<span class="c-ty">Amd</span>, <span class="c-ty">Natural</span>, <span class="c-ty">Ordering</span>, <span class="c-ty">OrderingTarget</span>};
+
+<span class="c-kw">let</span> s = a.<span class="c-cmd">pattern</span>();                   <span class="c-cmt">// values dropped</span>
+<span class="c-kw">let</span> p = <span class="c-ty">Amd</span>::<span class="c-cmd">default</span>().<span class="c-cmd">order</span>(&amp;s, <span class="c-ty">OrderingTarget</span>::Symmetric)?;
+<span class="c-kw">let</span> nnz_l = s.<span class="c-cmd">cholesky_nnz</span>(&amp;p)?;       <span class="c-cmt">// Liu's row subtrees</span>
+
+<span class="c-cmt">// the same, in the natural order, for comparison</span>
+<span class="c-kw">let</span> q = <span class="c-ty">Natural</span>.<span class="c-cmd">order</span>(&amp;s, <span class="c-ty">OrderingTarget</span>::Symmetric)?;
+assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code></pre>
+          </div>
+        </div>
+      </div>
+      <p class="note">Three complete programs ship with the crate: <code>cargo run --example basis_lu</code>, <code>ordering</code> and <code>kkt_ipm_step</code>. Each ends in a check of its own result.</p>
+    </div>
+  </section>
+
+  <section id="limits" class="alt">
+    <div class="wrap">
+      <h2>Known limitations of 0.1</h2>
+      <p class="sub">Each one is measured and recorded, with the measurement, in the solver's decision log. They are the next releases' work, not surprises.</p>
+      <div class="card scroll">
+        <table class="cmp">
+          <tbody>
+            <tr><td><code>FaerLdl</code> is <code>f64</code>-only; its Bunch–Kaufman pivoting is intranodal and used only for an unregularized augmented system.</td></tr>
+            <tr><td>The default regularization (ρ = 10<sup>−6</sup>, δ = 10<sup>−8</sup> in the equilibrated matrix) was calibrated on Netlib, 558 systems plus 3 × 558 with other random diagonals; one of those extra systems reached 1.6 × 10<sup>−10</sup> with the default refinement. A running interior-point method will review ρ, δ.</td></tr>
+            <tr><td>Our AMD takes about 1.25× the time of faer's with the same fill: the same algorithmic work, a different storage of the lists.</td></tr>
+            <tr><td>The count of bumped pivots is exact for simplicial factors; for supernodal ones, negative-sign bumps are counted by value and may be overcounted.</td></tr>
+            <tr><td>The LU declares singular a column whose entries are all at or below the absolute pivot tolerance (10<sup>−10</sup>) without scaling; sherman3 needs <code>Scaling</code> first. Refactorization speeds up dense factors less than 1.5×.</td></tr>
+            <tr><td>Bartels–Golub updates and an own supernodal LDLᵀ are specified in the crate's contract and scheduled after 0.1.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div><strong>xingo-sparse</strong> · MIT or Apache-2.0 · the linear algebra layer of the <a href="https://github.com/StrategicProjects/xingo">Xingó</a> solver · André Leite</div>
+    <div class="foot-links">
+      <a href="https://github.com/StrategicProjects/xingo-sparse">Repository</a>
+      <a href="https://crates.io/crates/xingo-sparse">crates.io</a>
+      <a href="https://docs.rs/xingo-sparse">docs.rs</a>
+      <a href="api/xingo_sparse/">API reference</a>
+      <a href="https://github.com/StrategicProjects/xingo-sparse/blob/main/CHANGELOG.md">Changelog</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
