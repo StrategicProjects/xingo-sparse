@@ -238,7 +238,7 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
     <div class="wrap">
       <h2>Measured, not guessed</h2>
       <p class="sub">Each number below comes from the decision log of the solver this crate was built for, with the harness that produced it. The oracles (SuiteSparse, SuperLU/scipy, faer) are development dependencies only.</p>
-      <div class="grid f2">
+      <div class="grid f2" style="align-items:start">
         <div class="viz">
           <h3>Fill of our AMD against SuiteSparse's</h3>
           <p class="cap">nnz(L) of the Cholesky factor, ours over SuiteSparse's, on the 93 Netlib normal equations <code>A Aᵀ</code> and Harwell–Boeing matrices. The acceptance line is 1.05.</p>
@@ -358,7 +358,7 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
 
   <section id="limits" class="alt">
     <div class="wrap">
-      <h2>Known limitations of 0.1</h2>
+      <h2>Known limitations of 0.2</h2>
       <p class="sub">Each one is measured and recorded, with the measurement, in the solver's decision log. They are the next releases' work, not surprises.</p>
       <div class="card scroll">
         <table class="cmp">
