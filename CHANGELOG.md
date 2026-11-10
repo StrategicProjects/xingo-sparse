@@ -5,6 +5,13 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [Unreleased]
+
+### Added
+
+* `CITATION.cff` and the Zenodo DOI (concept 10.5281/zenodo.24095312;
+  0.1.0 is 10.5281/zenodo.24095313) in the README.
+
 ## [0.1.0] — 2026-11-09
 
 The first release: the sparse linear algebra of the Xingó solver, split

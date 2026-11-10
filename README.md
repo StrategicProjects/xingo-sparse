@@ -4,6 +4,7 @@
 [![docs.rs](https://docs.rs/xingo-sparse/badge.svg)](https://docs.rs/xingo-sparse)
 ![MSRV 1.90](https://img.shields.io/badge/MSRV-1.90-blue.svg)
 ![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24095312.svg)](https://doi.org/10.5281/zenodo.24095312)
 
 Sparse linear algebra **for optimization solvers**, in pure Rust: the
 factorizations a simplex method and an interior-point method need, over
@@ -217,9 +218,10 @@ the solver that uses it. This stand-alone repository,
 is a read-only mirror of that directory (`git subtree split`, full history),
 updated at every release; it exists so that the library can be archived and
 cited on its own. Issues and pull requests about the crate are welcome in
-either repository. Each release of the mirror is archived on Zenodo; the DOI
-of the version you use is on the release page, and `CITATION.cff` carries
-the concept DOI once the first archive exists.
+either repository. Each release of the mirror is archived on Zenodo: the
+concept DOI [10.5281/zenodo.24095312](https://doi.org/10.5281/zenodo.24095312)
+always resolves to the latest version, each release has its own DOI on its
+release page, and `CITATION.cff` has the citation metadata.
 
 ## Minimum supported Rust version
 

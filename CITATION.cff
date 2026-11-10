@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use xingo-sparse, please cite it using these metadata. The concept DOI below resolves to the latest version; each release has its own DOI on Zenodo."
+type: software
+title: "xingo-sparse: sparse linear algebra for optimization solvers"
+abstract: "Sparse linear algebra for optimization in pure Rust: generic CSC/CSR containers, a threshold-pivoting LU for simplex bases with Forrest-Tomlin updates and hypersparse solves, AMD and COLAMD orderings, scaling, and regularized, refined KKT solvers for interior-point methods. The linear algebra layer of the Xingó solver."
+authors:
+  - family-names: Leite
+    given-names: André
+license: "MIT OR Apache-2.0"
+repository-code: "https://github.com/StrategicProjects/xingo-sparse"
+url: "https://strategicprojects.github.io/xingo-sparse/"
+doi: 10.5281/zenodo.24095312
+version: 0.1.0
+date-released: 2026-11-09
+keywords:
+  - sparse linear algebra
+  - LU factorization
+  - Forrest-Tomlin
+  - AMD
+  - COLAMD
+  - KKT
+  - interior-point method
+  - simplex method
+  - Rust
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24095312
+    description: "Concept DOI (all versions)"
+  - type: doi
+    value: 10.5281/zenodo.24095313
+    description: "Version 0.1.0"
