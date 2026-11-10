@@ -9,8 +9,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/xingo-sparse"
 keywords = ["sparse", "linear-algebra", "lu", "simplex", "factorization"]
 categories = ["mathematics", "science", "algorithms"]
+# The package is the source, its tests, examples, README and CHANGELOG.
+# The proptest regression seeds are development state (replayed by
+# `cargo test` from a checkout, meaningless to a user of the crate).
+exclude = ["proptest-regressions/"]
+
+# docs.rs builds with `faer` so that `FaerLdl` and `FaerDense` appear.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # faer (pure Rust, MIT) backs the KKT solver `FaerLdl` and the dense kernels
@@ -27,6 +37,18 @@ faer = { version = "0.24.4", optional = true, default-features = false, features
 
 [dev-dependencies]
 proptest.workspace = true
+
+# The examples (task L1.7a) build matrices in code with `Triplets`, run
+# with `cargo run -p xingo-sparse --example <name>` and end in an `assert!`.
+[[example]]
+name = "basis_lu"
+
+[[example]]
+name = "ordering"
+
+[[example]]
+name = "kkt_ipm_step"
+required-features = ["faer"]
 
 [lints]
 workspace = true

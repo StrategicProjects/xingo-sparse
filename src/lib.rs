@@ -74,6 +74,7 @@
 //! |----------------------------------|---------------------------------------------------------|
 //! | `Real`                           | [`Real`] (adds `Sum`, needed for bit-identical sums)     |
 //! | `CscMatrix<T>`, `CsrMatrix<T>`, `SparseVec<T>` | the same layouts; first-edition methods kept |
+//! | `Triplets<T>`, `BlockPartition` | [`Triplets`] (§5.8.4; `to_csc` keeps (C3): a zero *sum* is not stored, zero *inputs* are legal; + `from_csc`, `len`, `is_empty`, `clear`, `reserve`, `check_invariants`), [`BlockPartition`] (§5.8.5; + `new`, `from_sizes`, `check_invariants` and the block accessors) (L1.7a) |
 //! | `SparseError`, `LuError`         | [`SparseError`], [`LuError`] (variants of the first edition, see §5.0) |
 //! | `ColumnRef`, `Sign`, `ColumnSource<T>` | [`ColumnRef`], [`Sign`], [`ColumnSource`] (static dispatch) |
 //! | `LuOptions`, `LuStats`, `SolveStats`, `UpdateStats` | [`LuOptions`] (+ `drop_tol`), [`LuStats`], [`SolveStats`], [`UpdateStats`] |
@@ -106,10 +107,9 @@
 //!   backend (§5.14); its v0.1 backend [`FaerLdl`] over faer's sparse
 //!   `LDLᵀ`/`LBLᵀ` ordered by our [`Amd`] (§5.15, feature `faer`); and the
 //!   dense kernels [`DenseKernel`], [`NaiveDense`] and `FaerDense`
-//!   (§5.16). `Triplets` and `BlockPartition` wait for a consumer
-//!   ([`CscMatrix::from_triplets`] covers the builder today). The simplex
-//!   uses none of it, and faer is not in the solver's build: the workspace
-//!   depends on this crate without default features.
+//!   (§5.16). The simplex uses none of it, and faer is not in the
+//!   solver's build: the workspace depends on this crate without default
+//!   features.
 //! * **L1.5b** (done) — before 0.1.0: a default regularization that holds
 //!   at the end of an interior-point method (shifts in the equilibrated
 //!   matrix, §5.14), refinement by right-preconditioned GMRES with
@@ -117,6 +117,14 @@
 //!   allocation and exact bump counts (§5.15), the elimination-tree
 //!   postorder before faer's supernodes (§5.9, Algorithm P), a faster
 //!   Algorithm Q (§5.11), and the replay threshold of Algorithm R (§5.12).
+//! * **L1.7a** (done) — what 0.1.0 ships besides the code: the last two
+//!   containers of the contract, the coordinate builder [`Triplets`]
+//!   (§5.8.4, Algorithm C′) and [`BlockPartition`] (§5.8.5, Algorithm B);
+//!   the crate's README, CHANGELOG and three runnable examples
+//!   (`examples/`: a basis LU with a Forrest–Tomlin update, the orderings
+//!   against the natural order, one KKT step of an interior-point method);
+//!   complete item documentation. No solver path changes (nothing uses the
+//!   two new types yet).
 //! * **L1.6** — the own `SupernodalLdl<T, K>`, after the interior-point
 //!   method has measured faer.
 //!
@@ -144,7 +152,9 @@
 //! * §5.6 [`real`] — the scalar trait [`Real`] and the comparisons;
 //! * §5.7 [`index`] — the typed indices [`Col`] and [`Row`];
 //! * §5.8 [`compressed`], [`csc`], [`csr`], [`vector`] — the containers
-//!   (Algorithms T, C and S; Chapter 1.2 of the first edition);
+//!   (Algorithms T, C and S; Chapter 1.2 of the first edition); [`triplets`]
+//!   — the coordinate builder [`Triplets`] (Algorithm C′); [`partition`] —
+//!   [`BlockPartition`] (Algorithm B);
 //! * §5.9 [`perm`] — [`Perm`] and [`Pattern`], and the Cholesky count of an
 //!   ordering (Algorithm E);
 //! * §5.10 [`ordering`] — [`Ordering`], [`Natural`], [`Amd`] (Algorithm A),
@@ -219,6 +229,7 @@ pub mod faer_ldl;
 pub mod index;
 pub mod kkt;
 pub mod ordering;
+pub mod partition;
 pub mod perm;
 mod qgraph;
 pub mod real;
@@ -226,11 +237,20 @@ pub mod scaling;
 pub mod solve;
 mod store;
 pub mod symbolic;
+pub mod triplets;
 pub mod update;
 pub mod vector;
 
 #[cfg(test)]
 mod tests;
+
+/// The code blocks of the crate's README, compiled and run as doc-tests
+/// (`cargo test --doc`) so that the README never drifts from the API. The
+/// README is not the root documentation — this chapter is — and its KKT
+/// snippet needs `faer`, hence the gate.
+#[cfg(all(doctest, feature = "faer"))]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
 
 pub use basis::{ColumnRef, ColumnSource, Sign};
 pub use csc::CscMatrix;
@@ -248,10 +268,12 @@ pub use kkt::{
     Regularization, ShiftScale,
 };
 pub use ordering::{Amd, Colamd, Natural, Ordering, OrderingTarget};
+pub use partition::BlockPartition;
 pub use perm::{Pattern, Perm};
 pub use real::Real;
 pub use scaling::{Equilibration, Scaling};
 pub use solve::{HYPER_HISTORY_WEIGHT, SolveStats};
 pub use symbolic::SymbolicLu;
+pub use triplets::Triplets;
 pub use update::{BasisUpdate, ForrestTomlin, RefactorReason, UpdateOutcome, UpdateStats};
 pub use vector::SparseVec;

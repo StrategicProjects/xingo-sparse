@@ -17,7 +17,13 @@
 //!   built on demand for row-wise operations (pivot row `α_r = ρ_r A_N`,
 //!   presolve, propagation; Chapter 5.8.2);
 //! * [`SparseVec`](crate::SparseVec) — a dense work array with an explicit nonzero pattern
-//!   (Chapter 5.8.3).
+//!   (Chapter 5.8.3);
+//! * [`Triplets`](crate::Triplets) — the coordinate builder: entries pushed in any order,
+//!   duplicates summed, compressed by Algorithm C′ (Chapter 5.8.4; task
+//!   L1.7a);
+//! * [`BlockPartition`](crate::BlockPartition) — the row/column block boundaries of a
+//!   partitioned matrix such as `[A | ±I]` or `[−D Aᵀ; A δI]` (Chapter
+//!   5.8.5; task L1.7a).
 //!
 //! ## Notation
 //! `A ∈ R^{m×n}` with `nnz` stored entries. In CSC, the entries of column `j`
