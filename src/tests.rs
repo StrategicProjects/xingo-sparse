@@ -1311,3 +1311,97 @@ fn refactorization_falls_back() {
 fn refactor_pivot_tol_is_checked() {
     LuF64::default().set_refactor_pivot_tol(Some(0.0));
 }
+
+// ---------------------------------------------------------------------------
+// Generators of KKT systems (Chapters 5.15 and 5.17).
+// ---------------------------------------------------------------------------
+
+/// Random KKT systems for the tests of the backends (task L1.6a; the
+/// generator of the `FaerLdl` tests of L1.5, shared).
+pub(crate) mod kkt_gen {
+    use crate::real::is_exact_zero;
+    use crate::{Col, CscMatrix, KktForm, Row};
+
+    /// xorshift in `[0, 1)`.
+    pub(crate) struct Rng(pub(crate) u64);
+    impl Rng {
+        pub(crate) fn unit(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            #[allow(clippy::cast_precision_loss)]
+            let u = (self.0 >> 11) as f64 / (1_u64 << 53) as f64;
+            u
+        }
+    }
+
+    /// A random sparse `m × n` matrix with a nonzero in every row (full
+    /// row rank with probability one) and the KKT systems built from it
+    /// with `D = 10^{±spread·u}`: the lower triangles of the augmented
+    /// system and of the normal equations, and the augmented form.
+    pub(crate) fn kkt(
+        m: usize,
+        n: usize,
+        spread: f64,
+        seed: u64,
+    ) -> (CscMatrix, CscMatrix, KktForm) {
+        let mut r = Rng(seed | 1);
+        let mut a = Vec::new();
+        for i in 0..m {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss
+            )]
+            let j = (r.unit() * n as f64) as usize % n;
+            a.push((i, j, 1.0 + r.unit()));
+            for jj in 0..n {
+                if jj != j && r.unit() < 0.2 {
+                    a.push((i, jj, 2.0 * r.unit() - 1.0));
+                }
+            }
+        }
+        let d: Vec<f64> = (0..n)
+            .map(|_| 10f64.powf(spread * (2.0 * r.unit() - 1.0)))
+            .collect();
+        let mut t = Vec::new();
+        for (j, &dj) in d.iter().enumerate() {
+            t.push((Row::from_usize(j), Col::from_usize(j), -dj));
+        }
+        for &(i, j, v) in &a {
+            t.push((Row::from_usize(n + i), Col::from_usize(j), v));
+        }
+        let aug = CscMatrix::from_triplets(n + m, n + m, &t).unwrap();
+        let mut dense = vec![vec![0.0; m]; m];
+        for &(i, j, v) in &a {
+            for &(p, q, w) in &a {
+                if q == j && p <= i {
+                    dense[i][p] += v * d[j] * w;
+                }
+            }
+        }
+        let mut tn = Vec::new();
+        for (i, row) in dense.iter().enumerate() {
+            for (p, &v) in row.iter().enumerate() {
+                if !is_exact_zero(v) {
+                    tn.push((Row::from_usize(i), Col::from_usize(p), v));
+                }
+            }
+        }
+        let normal = CscMatrix::from_triplets(m, m, &tn).unwrap();
+        (
+            aug,
+            normal,
+            KktForm::Augmented {
+                n_primal: n,
+                n_dual: m,
+            },
+        )
+    }
+
+    /// A random vector in `[-1, 1)^n`.
+    pub(crate) fn rhs(n: usize, seed: u64) -> Vec<f64> {
+        let mut r = Rng(seed | 3);
+        (0..n).map(|_| 2.0 * r.unit() - 1.0).collect()
+    }
+}

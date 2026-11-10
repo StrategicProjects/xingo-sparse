@@ -225,7 +225,7 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
       <div class="grid f3">
         <div class="card"><div class="ic">▤</div><h3>The basis of a simplex method</h3><p>A dynamic LU with threshold Markowitz pivoting (Suhl &amp; Suhl), <strong>Forrest–Tomlin updates</strong> when one column changes, hypersparse FTRAN/BTRAN (Gilbert–Peierls reach, a density policy per call). The basis is never formed: it is a list of references into <code>[A | ±I]</code>. A reusable pivot sequence replays the last factorization on new values.</p></div>
         <div class="card"><div class="ic">⇅</div><h3>Fill-reducing orderings</h3><p>Our own <code>Amd</code> (Amestoy, Davis &amp; Duff) and <code>Colamd</code> (Davis, Gilbert, Larimore &amp; Ng) on one approximate-minimum-degree engine over a quotient graph, behind the <code>Ordering</code> trait on a value-free <code>Pattern</code>. The elimination-tree postorder puts the heaviest child last, so supernodes merge.</p></div>
-        <div class="card"><div class="ic">◩</div><h3>KKT systems of an interior-point method</h3><p><code>KktSolver</code> in the CHOLMOD shape: analyze once, factorize many, solve. Regularization (static shifts in the equilibrated matrix, dynamic pivot bumping, inertia check) and refinement by right-preconditioned GMRES are the trait's provided methods, so every backend shares them. The 0.1 backend is <code>FaerLdl</code>, faer's sparse LDLᵀ ordered by our AMD.</p></div>
+        <div class="card"><div class="ic">◩</div><h3>KKT systems of an interior-point method</h3><p><code>KktSolver</code> in the CHOLMOD shape: analyze once, factorize many, solve. Regularization (static shifts in the equilibrated matrix, dynamic pivot bumping, inertia check) and refinement by right-preconditioned GMRES are the trait's provided methods, so every backend shares them. Two backends: our own <code>SupernodalLdl</code> (elimination tree, relaxed supernodes, left-looking blocks on dense kernels, exact bump counts, generic in the scalar, no dependency) and <code>FaerLdl</code>, faer's sparse LDLᵀ; both ordered by our AMD.</p></div>
       </div>
       <div class="pills" style="margin-top:22px">
         <span class="pill">CscMatrix&lt;T&gt;</span><span class="pill">CsrMatrix&lt;T&gt;</span><span class="pill">SparseVec&lt;T&gt;</span><span class="pill">Triplets&lt;T&gt;</span><span class="pill">Pattern</span><span class="pill">BlockPartition</span><span class="pill">Lu&lt;T, U&gt;</span><span class="pill">ForrestTomlin</span><span class="pill">SymbolicLu</span><span class="pill">Amd</span><span class="pill">Colamd</span><span class="pill">Scaling</span><span class="pill">KktSolver</span><span class="pill">Regularization</span><span class="pill">Refinement</span><span class="pill">FaerLdl</span><span class="pill">DenseKernel</span>
@@ -266,11 +266,11 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
             <rect x="130" y="164" width="218" height="16" rx="3" fill="var(--cell)"/>
             <text x="354" y="177" class="m">1.009</text>
           </svg>
-          <p class="note">331 comparisons, none above 1.05. Factorization time of faer with our ordering: 0.98× faer's own AMD (geometric mean, ten largest Netlib); ordering time 1.25× faer's.</p>
+          <p class="note">331 comparisons, none above 1.05. Factorization time of faer with our ordering: 0.98× faer's own AMD (geometric mean, ten largest Netlib); ordering time about 1.15× faer's since the engine moved to one garbage-collected workspace.</p>
         </div>
         <div class="viz">
           <h3>KKT systems at three stages of an interior-point method</h3>
-          <p class="cap">93 Netlib LPs × normal equations and augmented system × a diagonal <code>D</code> at the start (10<sup>±0.5</sup>), the middle (10<sup>±4</sup>) and the end (10<sup>±8..10</sup>) of the method: 558 systems, default regularization and refinement.</p>
+          <p class="cap">93 Netlib LPs × normal equations and augmented system × a diagonal <code>D</code> at the start (10<sup>±0.5</sup>), the middle (10<sup>±4</sup>) and the end (10<sup>±8..10</sup>) of the method: 558 systems, default regularization and refinement, with either backend (<code>FaerLdl</code> and our <code>SupernodalLdl</code> give the same counts).</p>
           <div class="scroll">
             <table class="cmp">
               <thead><tr><th>Property</th><th class="num">Systems</th></tr></thead>
@@ -280,6 +280,8 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
                 <tr><td>Largest such residual</td><td class="num">9.4 × 10<sup>−11</sup></td></tr>
                 <tr><td>Refinement steps, median / maximum</td><td class="num">2 / 10</td></tr>
                 <tr><td>Non-finite factors or solutions reported silently</td><td class="num">0</td></tr>
+                <tr><td>Stored factor of <code>SupernodalLdl</code> equal to faer's supernodal one, same ordering</td><td class="num">558 / 558</td></tr>
+                <tr><td>Factorization time of <code>SupernodalLdl</code> with faer's kernels, over <code>FaerLdl</code> (ten largest, geometric mean)</td><td class="num">1.02×</td></tr>
               </tbody>
             </table>
           </div>
@@ -361,12 +363,12 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
       <div class="card scroll">
         <table class="cmp">
           <tbody>
-            <tr><td><code>FaerLdl</code> is <code>f64</code>-only; its Bunch–Kaufman pivoting is intranodal and used only for an unregularized augmented system.</td></tr>
+            <tr><td><code>SupernodalLdl</code> factorizes the two regularized systems with 1×1 pivots; an unregularized augmented system still needs <code>FaerLdl</code>'s intranodal Bunch–Kaufman, which is <code>f64</code>-only. The 2×2 pivots of the own backend come next.</td></tr>
             <tr><td>The default regularization (ρ = 10<sup>−6</sup>, δ = 10<sup>−8</sup> in the equilibrated matrix) was calibrated on Netlib, 558 systems plus 3 × 558 with other random diagonals; one of those extra systems reached 1.6 × 10<sup>−10</sup> with the default refinement. A running interior-point method will review ρ, δ.</td></tr>
-            <tr><td>Our AMD takes about 1.25× the time of faer's with the same fill: the same algorithmic work, a different storage of the lists.</td></tr>
-            <tr><td>The count of bumped pivots is exact for simplicial factors; for supernodal ones, negative-sign bumps are counted by value and may be overcounted.</td></tr>
+            <tr><td>Our AMD takes about 1.15× the time of faer's with the same fill.</td></tr>
+            <tr><td><code>FaerLdl</code>'s count of bumped pivots is exact for simplicial factors; for supernodal ones, negative-sign bumps are counted by value and may be overcounted (faer counts the positive ones only). <code>SupernodalLdl</code> counts both signs exactly.</td></tr>
             <tr><td>The LU declares singular a column whose entries are all at or below the absolute pivot tolerance (10<sup>−10</sup>) without scaling; sherman3 needs <code>Scaling</code> first. Refactorization speeds up dense factors less than 1.5×.</td></tr>
-            <tr><td>Bartels–Golub updates and an own supernodal LDLᵀ are specified in the crate's contract and scheduled after 0.1.</td></tr>
+            <tr><td>Bartels–Golub updates and the 2×2 pivots of the own LDLᵀ are specified in the crate's contract and scheduled next.</td></tr>
           </tbody>
         </table>
       </div>

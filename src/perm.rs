@@ -425,7 +425,6 @@ impl Pattern {
     /// Algorithm P on the symmetric pattern `self` (both triangles, as
     /// [`Pattern::symmetric`] returns): `perm` re-postordered by its
     /// elimination tree, heaviest child last (invariant (P4)).
-    #[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by the KKT backends
     pub(crate) fn etree_postorder(&self, perm: &Perm) -> Perm {
         let n = perm.len();
         debug_assert_eq!(self.n_cols(), n);
@@ -528,12 +527,10 @@ impl<T: Real> CscMatrix<T> {
     }
 }
 
-/// Converts an index below `u32::MAX` to `u32`.
-#[inline]
 /// Algorithm E (steps E1–E2) on the symmetric graph `g` under `perm`: the
 /// elimination tree (`parent[k]`, `usize::MAX` for a root; positions in
 /// the new order) and the column counts of `L` (diagonal included).
-fn etree_counts(g: &Pattern, perm: &Perm) -> (Vec<usize>, Vec<usize>) {
+pub(crate) fn etree_counts(g: &Pattern, perm: &Perm) -> (Vec<usize>, Vec<usize>) {
     let n = perm.len();
     // E1.
     let none = usize::MAX;
@@ -562,6 +559,8 @@ fn etree_counts(g: &Pattern, perm: &Perm) -> (Vec<usize>, Vec<usize>) {
     (parent, counts)
 }
 
+/// Converts an index below `u32::MAX` to `u32`.
+#[inline]
 pub(crate) fn idx32(i: usize) -> u32 {
     u32::try_from(i).expect("index exceeds u32::MAX")
 }

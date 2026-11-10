@@ -9,8 +9,38 @@ version may change the public API.
 
 ### Added
 
+* `SupernodalLdl<T, K>`, our own supernodal LDLᵀ behind `KktSolver`, with
+  no dependency: elimination tree and relaxed supernodes (CHOLMOD's
+  amalgamation rule, `SupernodalOptions::relax_zeros`), a left-looking
+  supernodal factorization with `1×1` pivots on the dense kernels
+  (`NaiveDense` always, `FaerDense` with the `faer` feature), the pivot
+  bumping of the regularization policy with the sign each block expects
+  and an **exact** count of the bumped pivots of both signs, the
+  simplicial/supernodal switch of CHOLMOD (`supernodal_switch`), solves
+  without allocation, generic in the scalar `T`. The symbolic
+  (`SymbolicLdl`) and numeric (`NumericLdl`) factors expose the
+  permutation, the supernode partition, the row patterns and the blocks.
+  `FaerLdl` stays as the optional backend and is the oracle of the tests.
+* The `KktSolver` documentation and the `kkt_ipm_step` example run on
+  `SupernodalLdl` (and, with `faer`, on `FaerLdl` too); the example no
+  longer requires the `faer` feature.
 * `CITATION.cff` and the Zenodo DOI (concept 10.5281/zenodo.24095312;
   0.1.0 is 10.5281/zenodo.24095313) in the README.
+
+### Changed
+
+* The approximate-minimum-degree engine behind `Amd` and `Colamd` keeps
+  its lists in one garbage-collected workspace (as SuiteSparse's AMD does)
+  instead of one vector per node, and the orderings hand it compressed
+  lists: no allocation per node. The output is unchanged bit for bit
+  (checked by a hash of the permutations on the 93 Netlib LPs, three
+  patterns each); the ordering time is reported in the decision log.
+
+### Known limitations
+
+* `SupernodalLdl` factorizes the two *regularized* systems (`1×1`
+  pivots); the Bunch–Kaufman `2×2` pivots for an unregularized augmented
+  system are the next step (`pivot_2x2` is all `false`).
 
 ## [0.1.0] — 2026-11-09
 

@@ -94,11 +94,14 @@ in the CHOLMOD shape (analyze once, factorize many, solve), with the
 **regularization** policy (static shifts `ρ, δ` in the equilibrated matrix
 plus dynamic pivot bumping, Altman & Gondzio 1999) and **iterative
 refinement** (right-preconditioned GMRES, best iterate kept) in the trait's
-provided methods, so every backend shares them. The 0.1 backend is
-`FaerLdl`, faer's sparse LDLᵀ/LBLᵀ ordered by our AMD (feature `faer`).
+provided methods, so every backend shares them. Two backends: our own
+**`SupernodalLdl`** — a supernodal LDLᵀ (elimination tree, relaxed
+supernodes, left-looking blocks on dense kernels, exact bump counts),
+generic in the scalar and with no dependency — and `FaerLdl`, faer's sparse
+LDLᵀ/LBLᵀ (feature `faer`), both ordered by our AMD.
 
 ```rust
-use xingo_sparse::{Amd, BlockPartition, FaerLdl, KktForm, KktSolver, Refinement, Regularization, Triplets};
+use xingo_sparse::{Amd, BlockPartition, KktForm, KktSolver, Refinement, Regularization, SupernodalLdl, Triplets};
 
 // K = [−D Aᵀ; A δI] for A = [1 1 0; 0 1 1], D = diag(1, 2, 3): lower triangle.
 let (n, m) = (3, 2);
@@ -114,7 +117,7 @@ for (i, j) in [(0, 0), (0, 1), (1, 1), (1, 2)] {
 let k = t.to_csc()?;
 let form = KktForm::Augmented { n_primal: n, n_dual: m };
 
-let solver = FaerLdl::default();
+let solver = SupernodalLdl::<f64>::default(); // or `FaerLdl::default()` with the `faer` feature
 let sym = solver.analyze(&k.pattern(), form, &Amd::default())?; // once per pattern
 let (num, inertia) = solver.factorize(&sym, &k, Regularization::default())?; // every iteration
 assert_eq!(inertia, form.expected_inertia(n + m)); // m positive, n negative pivots
@@ -139,8 +142,9 @@ The three programs in [`examples/`](examples/) run these end to end
 * Without it (`default-features = false`) the crate has no dependency at
   all: the containers, the LU with its updates and solves, the orderings,
   the scaling, the `KktSolver` trait with its regularization and
-  refinement, and the reference dense kernel `NaiveDense` remain. The
-  Xingó solver builds it this way: the simplex side never touches faer.
+  refinement, the own backend `SupernodalLdl` on the reference dense
+  kernel `NaiveDense` — a complete KKT solver — remain. The Xingó solver
+  builds it this way: the simplex side never touches faer.
 
 ## Scope
 
@@ -150,33 +154,36 @@ crate); the coordinate builder `Triplets` and `BlockPartition`; row/column
 scaling (geometric in powers of two, Curtis–Reid, ∞-norm); the dynamic LU
 with a reusable pivot sequence (`SymbolicLu`) for refactorizations of the
 same pattern; Forrest–Tomlin updates; AMD and COLAMD; the regularized,
-refined KKT solver.
+refined KKT solver with the own supernodal LDLᵀ and the faer backend.
 
 Out, by decision: a complete dense library; sparse matrix products, QR,
 SVD, eigenvalues; iterative solvers and preconditioners beyond the
 refinement loop; complex scalars; METIS or any C binding; GPU. Bartels–Golub
-updates and an own supernodal LDLᵀ are specified in the crate's contract and
-scheduled after 0.1.
+updates and the `2×2` pivots of the own LDLᵀ (an LBLᵀ for the unregularized
+augmented system) are specified in the crate's contract and scheduled
+next.
 
-## Known limitations of 0.1.0
+## Known limitations
 
 Measured, not guessed (the decision log of the solver records each):
 
-1. `FaerLdl` is implemented for `f64` only; its Bunch–Kaufman pivoting is
-   intranodal and used only for an *unregularized* augmented system — the
-   regularized path does not pivot (it is quasi-definite and needs none).
+1. `SupernodalLdl` factorizes the two *regularized* systems with `1×1`
+   pivots (they are quasi-definite and need none); an *unregularized*
+   augmented system still needs `FaerLdl`'s intranodal Bunch–Kaufman,
+   which is `f64`-only. The `2×2` pivots of the own backend are the next
+   step.
 2. The default regularization (`ρ = 10⁻⁶`, `δ = 10⁻⁸` in the equilibrated
    matrix) was calibrated on the 93 Netlib LPs at three stages of an
    interior-point method (558 systems, plus 3 × 558 with other random
    diagonals): residual against the unregularized `K` at most `10⁻¹⁰` with
    the default refinement in all but one case (that one at `1.6·10⁻¹⁰`). A
    running interior-point method will review `ρ, δ`.
-3. Our `Amd` is about 1.25× slower than faer's AMD (geometric mean on the
-   ten largest Netlib systems, at most 1.42×), with the same fill; it does
-   the same algorithmic work and stores its lists differently.
-4. The count of bumped pivots is exact for the simplicial structure; for
-   the supernodal one, negative-sign bumps are counted by value and may be
-   overcounted by a pivot that equals `−β` exactly.
+3. Our `Amd` takes about 1.15× the time of faer's AMD (geometric mean on the
+   ten largest Netlib systems), with the same fill.
+4. `FaerLdl`'s count of bumped pivots is exact for the simplicial
+   structure; for the supernodal one, negative-sign bumps are counted by
+   value and may be overcounted (faer counts only the positive ones;
+   reported upstream). `SupernodalLdl` counts both signs exactly.
 5. The LU declares singular a column whose entries are all at or below the
    absolute pivot tolerance (`10⁻¹⁰`), without scaling; the Harwell–Boeing
    matrix sherman3 needs `Scaling` first (or a lower `abs_pivot_tol`).
@@ -209,6 +216,13 @@ Measured, not guessed (the decision log of the solver records each):
   needs to recover. Panics are reserved for contract violations (a vector
   of the wrong length).
 * **No `unsafe`** in this crate (faer has its own, audited, kernels).
+* **Two KKT backends, one policy.** `SupernodalLdl` (ours, generic, no
+  dependency) and `FaerLdl` (faer) share the regularization and the
+  refinement of the trait; on the 558 Netlib systems both give the
+  expected inertia and a residual against the unregularized `K` at most
+  `10⁻¹⁰`, and `SupernodalLdl` stores exactly faer's supernodal factor
+  under the same ordering, factorizing in 1.02× of faer's time (geometric
+  mean, ten largest Netlib) with faer's dense kernels.
 
 ## Repository, issues and citation
 

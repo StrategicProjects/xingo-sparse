@@ -51,9 +51,10 @@ name = "basis_lu"
 [[example]]
 name = "ordering"
 
+# `kkt_ipm_step` runs the own `SupernodalLdl` always and, with `faer`, the
+# `FaerLdl` backend on the same systems.
 [[example]]
 name = "kkt_ipm_step"
-required-features = ["faer"]
 
 # The workspace's lints, spelled out (see the header comment).
 [lints.rust]

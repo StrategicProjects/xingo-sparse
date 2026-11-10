@@ -469,9 +469,8 @@ impl KktForm {
 /// Algorithm K) and refinement (Algorithm F) are shared by every backend.
 ///
 /// ```
-/// # #[cfg(feature = "faer")] {
 /// use xingo_sparse::{
-///     Amd, Col, CscMatrix, FaerLdl, KktForm, KktSolver, Refinement, Regularization, Row,
+///     Amd, Col, CscMatrix, KktForm, KktSolver, Refinement, Regularization, Row, SupernodalLdl,
 /// };
 /// // K = [−D, Aᵀ; A, 0] with D = diag(1, 2), A = [1 1]: lower triangle.
 /// let k = CscMatrix::from_triplets(3, 3, &[
@@ -480,7 +479,7 @@ impl KktForm {
 /// ])
 /// .unwrap();
 /// let form = KktForm::Augmented { n_primal: 2, n_dual: 1 };
-/// let solver = FaerLdl::default();
+/// let solver = SupernodalLdl::<f64>::default(); // or FaerLdl with the `faer` feature
 /// let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
 /// let (num, inertia) = solver.factorize(&sym, &k, Regularization::default()).unwrap();
 /// assert_eq!(inertia, form.expected_inertia(3)); // (S6): 1 positive, 2 negative
@@ -488,7 +487,6 @@ impl KktForm {
 /// let mut x = [0.0; 3];
 /// let report = solver.solve_refined(&num, &k, &b, &mut x, Refinement::default());
 /// assert!(report.converged && report.residual <= 1e-12);
-/// # }
 /// ```
 pub trait KktSolver<T: Real> {
     /// The result of the symbolic phase.
@@ -824,7 +822,6 @@ fn residual<T: Real>(k: &CscMatrix<T>, x: &[T], b: &[T], r: &mut [T]) {
 /// The lower triangle of a symmetric pattern plus a full diagonal, as the
 /// symbolic phase of every backend consumes it (step K1 for the pattern,
 /// invariant (K1)). The order `N` is checked against the form.
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn lower_with_diagonal(pattern: &Pattern, form: KktForm) -> Result<Pattern, KktError> {
     pattern.check_invariants()?;
     let n = pattern.n_cols();
@@ -868,7 +865,6 @@ pub(crate) fn lower_with_diagonal(pattern: &Pattern, form: KktForm) -> Result<Pa
 
 /// The regularization is usable: `ρ, δ, β ≥ 0` finite, and with dynamic
 /// regularization `τ > 0` and `β > 0`.
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn check_regularization<T: Real>(reg: &Regularization<T>) -> Result<(), KktError> {
     for (what, x) in [
         ("primal regularization", reg.primal),
@@ -897,7 +893,6 @@ pub(crate) fn check_regularization<T: Real>(reg: &Regularization<T>) -> Result<(
 
 /// The pivot signs `σ_k` of step K3: `−1` on the primal rows, `+1` on the
 /// dual rows (all `+1` for the normal equations).
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn pivot_signs(form: KktForm, n: usize) -> Vec<i8> {
     match form {
         KktForm::NormalEquations => vec![1; n],
@@ -913,7 +908,6 @@ pub(crate) fn pivot_signs(form: KktForm, n: usize) -> Vec<i8> {
 /// `K̃_reg` and the scaling `s`. Fails (K1, K1′) if `k` does not satisfy
 /// (S1), has the wrong order, has a lower entry outside `l`, or a
 /// non-finite lower entry.
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn assemble_regularized<T: Real>(
     l: &Pattern,
     form: KktForm,
@@ -1038,7 +1032,6 @@ pub const EQUILIBRATION_PASSES: usize = 20;
 
 /// Step K2′: symmetric equilibration of the lower pattern `l` with values
 /// `val` (full diagonal present), in place; returns `s` (powers of two).
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn equilibrate_symmetric<T: Real>(l: &Pattern, val: &mut [T]) -> Vec<T> {
     let n = l.n_cols();
     let mut s = vec![T::ONE; n];
@@ -1087,7 +1080,6 @@ fn pow2_round<T: Real>(x: T) -> T {
 }
 
 /// Step K4: the (S6) check.
-#[cfg_attr(not(feature = "faer"), allow(dead_code))] // used by every backend
 pub(crate) fn check_inertia(found: Inertia, expected: Inertia) -> Result<Inertia, KktError> {
     if found == expected {
         Ok(found)
@@ -1182,7 +1174,7 @@ mod tests {
             n_dual: 1,
         };
         let l = lower_with_diagonal(&k.pattern(), form).unwrap();
-        let mut reg = Regularization {
+        let mut reg = Regularization::<f64> {
             primal: 0.5,
             dual: 0.25,
             pivot_tol: None,

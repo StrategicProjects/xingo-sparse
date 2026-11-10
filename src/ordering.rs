@@ -196,43 +196,53 @@ fn square(pattern: &Pattern) -> Result<usize, SparseError> {
     }
 }
 
+/// Compressed lists: `idx[ptr[i]..ptr[i + 1]]` is list `i`.
+type Lists = (Vec<usize>, Vec<u32>);
+
 /// The off-diagonal adjacency of a symmetric pattern.
-fn adjacency(g: &Pattern) -> Vec<Vec<u32>> {
-    (0..g.n_cols())
-        .map(|j| {
-            g.col(j)
-                .iter()
-                .copied()
-                .filter(|&i| i as usize != j)
-                .collect()
-        })
-        .collect()
+fn adjacency(g: &Pattern) -> Lists {
+    let n = g.n_cols();
+    let mut ptr = Vec::with_capacity(n + 1);
+    let mut idx = Vec::with_capacity(g.nnz());
+    ptr.push(0);
+    for j in 0..n {
+        idx.extend(g.col(j).iter().copied().filter(|&i| i as usize != j));
+        ptr.push(idx.len());
+    }
+    (ptr, idx)
 }
 
 /// The off-diagonal adjacency of `S + Sᵀ` for a square `S` (Algorithm S of
 /// Chapter 5.9 straight into the lists the engine takes: one transpose
 /// and one merge per column, no intermediate pattern).
-fn sym_adjacency(s: &Pattern) -> Vec<Vec<u32>> {
+fn sym_adjacency(s: &Pattern) -> Lists {
     let t = s.transpose();
-    (0..s.n_cols())
-        .map(|j| {
-            let (a, b) = (s.col(j), t.col(j));
-            let jj = idx32(j);
-            let mut out = Vec::with_capacity(a.len() + b.len());
-            let (mut p, mut q) = (0, 0);
-            while p < a.len() && q < b.len() {
-                let (x, y) = (a[p], b[q]);
-                let next = x.min(y);
-                p += usize::from(x == next);
-                q += usize::from(y == next);
-                if next != jj {
-                    out.push(next);
-                }
+    let n = s.n_cols();
+    let mut ptr = Vec::with_capacity(n + 1);
+    let mut out = Vec::with_capacity(2 * s.nnz());
+    ptr.push(0);
+    for j in 0..n {
+        let (a, b) = (s.col(j), t.col(j));
+        let jj = idx32(j);
+        let (mut p, mut q) = (0, 0);
+        while p < a.len() && q < b.len() {
+            let (x, y) = (a[p], b[q]);
+            let next = x.min(y);
+            p += usize::from(x == next);
+            q += usize::from(y == next);
+            if next != jj {
+                out.push(next);
             }
-            out.extend(a[p..].iter().chain(&b[q..]).copied().filter(|&i| i != jj));
-            out
-        })
-        .collect()
+        }
+        out.extend(a[p..].iter().chain(&b[q..]).copied().filter(|&i| i != jj));
+        ptr.push(out.len());
+    }
+    (ptr, out)
+}
+
+/// No lists at all (`n` empty ones).
+fn no_lists(n: usize) -> Lists {
+    (vec![0; n + 1], Vec::new())
 }
 
 /// `fwd` = `ordered`, then the excluded indices of each group in order.
@@ -264,22 +274,27 @@ impl Ordering for Amd {
     fn order(&self, pattern: &Pattern, target: OrderingTarget) -> Result<Perm, SparseError> {
         pattern.check_invariants()?;
         // A1.
-        let adj = match target {
+        let (adj_ptr, adj_idx) = match target {
             OrderingTarget::Symmetric => {
                 square(pattern)?;
                 sym_adjacency(pattern)
             }
             OrderingTarget::Columns => adjacency(&pattern.ata()),
         };
-        let n = adj.len();
+        let n = adj_ptr.len() - 1;
         // A2.
         let delta = dense_threshold(self.dense, n);
-        let excluded: Vec<bool> = adj.iter().map(|a| a.len() > delta).collect();
+        let excluded: Vec<bool> = (0..n)
+            .map(|i| adj_ptr[i + 1] - adj_ptr[i] > delta)
+            .collect();
         // A3.
+        let (elem_ptr, elem_idx) = no_lists(0);
         let fwd = qgraph::order(Input {
             n,
-            adj,
-            elems: Vec::new(),
+            adj_ptr,
+            adj_idx,
+            elem_ptr,
+            elem_idx,
             excluded: excluded.clone(),
             aggressive: self.aggressive,
             previous_degree: true,
@@ -319,31 +334,34 @@ impl Colamd {
         // C2.
         let t = s.transpose();
         let kr = dense_threshold(self.dense_row, n);
-        let mut elems = Vec::with_capacity(m);
+        let mut elem_ptr = Vec::with_capacity(m + 1);
+        let mut elem_idx = Vec::with_capacity(s.nnz());
+        elem_ptr.push(0);
         let mut has_row = vec![false; n];
         for i in 0..m {
-            let row: Vec<u32> = t
-                .col(i)
-                .iter()
-                .copied()
-                .filter(|&j| !dense[j as usize])
-                .collect();
+            let start = elem_idx.len();
+            elem_idx.extend(t.col(i).iter().copied().filter(|&j| !dense[j as usize]));
+            let row = &elem_idx[start..];
             if row.is_empty() || row.len() > kr {
+                elem_idx.truncate(start);
                 continue;
             }
-            for &j in &row {
+            for &j in row {
                 has_row[j as usize] = true;
             }
-            elems.push(row);
+            elem_ptr.push(elem_idx.len());
         }
         // C3.
         let null: Vec<bool> = (0..n).map(|j| !dense[j] && !has_row[j]).collect();
         let excluded: Vec<bool> = (0..n).map(|j| dense[j] || null[j]).collect();
         // C4.
+        let (adj_ptr, adj_idx) = no_lists(n);
         let fwd = qgraph::order(Input {
             n,
-            adj: vec![Vec::new(); n],
-            elems,
+            adj_ptr,
+            adj_idx,
+            elem_ptr,
+            elem_idx,
             excluded,
             aggressive: true,
             previous_degree: false,
@@ -356,24 +374,30 @@ impl Colamd {
     /// SYMAMD: Algorithm C on the edge rows of the symmetric pattern `g`.
     fn symmetric(self, g: &Pattern) -> Perm {
         let n = g.n_cols();
-        let adj = adjacency(g);
+        let (aptr, aidx) = adjacency(g);
         let kc = dense_threshold(self.dense_col, n);
-        let dense: Vec<bool> = adj.iter().map(|a| a.len() > kc).collect();
-        let mut elems = Vec::new();
-        for (j, a) in adj.iter().enumerate() {
+        let dense: Vec<bool> = (0..n).map(|j| aptr[j + 1] - aptr[j] > kc).collect();
+        let mut elem_ptr = vec![0_usize];
+        let mut elem_idx = Vec::new();
+        for j in 0..n {
             if dense[j] {
                 continue;
             }
-            for &i in a {
+            for &i in &aidx[aptr[j]..aptr[j + 1]] {
                 if (i as usize) < j && !dense[i as usize] {
-                    elems.push(vec![i, idx32(j)]);
+                    elem_idx.push(i);
+                    elem_idx.push(idx32(j));
+                    elem_ptr.push(elem_idx.len());
                 }
             }
         }
+        let (adj_ptr, adj_idx) = no_lists(n);
         let fwd = qgraph::order(Input {
             n,
-            adj: vec![Vec::new(); n],
-            elems,
+            adj_ptr,
+            adj_idx,
+            elem_ptr,
+            elem_idx,
             excluded: dense.clone(),
             aggressive: true,
             previous_degree: false,

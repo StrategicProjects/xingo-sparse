@@ -146,6 +146,54 @@ impl Real for f64 {
     }
 }
 
+/// A second scalar for the tests of the generic code (Chapter 5.17 among
+/// others): `f32`, with the inherent methods, as `f64` above. Not part of
+/// the public API — the extended types of `xingo-extprec` are the intended
+/// second instance.
+#[cfg(test)]
+impl Real for f32 {
+    const ZERO: Self = 0.0;
+    const ONE: Self = 1.0;
+    const EPSILON: Self = f32::EPSILON;
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)] // the nearest f32 is the contract (R4)
+    fn from_f64(x: f64) -> Self {
+        x as f32
+    }
+    #[inline]
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+    #[inline]
+    fn abs(self) -> Self {
+        f32::abs(self)
+    }
+    #[inline]
+    fn sqrt(self) -> Self {
+        f32::sqrt(self)
+    }
+    #[inline]
+    fn recip(self) -> Self {
+        f32::recip(self)
+    }
+    #[inline]
+    fn mul_add(self, a: Self, b: Self) -> Self {
+        f32::mul_add(self, a, b)
+    }
+    #[inline]
+    fn is_finite(self) -> bool {
+        f32::is_finite(self)
+    }
+    #[inline]
+    fn max(self, other: Self) -> Self {
+        f32::max(self, other)
+    }
+    #[inline]
+    fn min(self, other: Self) -> Self {
+        f32::min(self, other)
+    }
+}
+
 // The comparisons of the crate. This is the one place where scalar values
 // meet `<`, `>` or `==` (Chapter 5, §5.C); the definitions are those of
 // `xingo_core::Tolerances` (Chapter 1.3), generic in `T`.

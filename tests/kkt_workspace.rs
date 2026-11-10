@@ -1,13 +1,13 @@
-//! Chapter 5.15, Algorithm S and Chapter 5.14, Algorithm F (task L1.5b):
-//! a reused `RefineWorkspace` gives the same refined solution as a fresh
-//! one, call after call. (That the reuse allocates nothing was measured
-//! with a counting allocator in the L1.5b harness, outside the crate: a
-//! global allocator needs `unsafe`, which D-0006 keeps out of tests.)
-#![cfg(feature = "faer")]
+//! Chapters 5.15 and 5.17, Algorithm S, and Chapter 5.14, Algorithm F
+//! (tasks L1.5b and L1.6a): a reused `RefineWorkspace` gives the same
+//! refined solution as a fresh one, call after call, with every backend.
+//! (That the reuse allocates nothing was measured with a counting
+//! allocator in the L1.5b/L1.6a harnesses, outside the crate: a global
+//! allocator needs `unsafe`, which D-0006 keeps out of tests.)
 
 use xingo_sparse::{
-    Amd, Col, CscMatrix, FaerLdl, KktForm, KktSolver, RefineWorkspace, Refinement, Regularization,
-    Row,
+    Amd, Col, CscMatrix, KktForm, KktSolver, RefineWorkspace, Refinement, Regularization, Row,
+    SupernodalLdl, SupernodalOptions,
 };
 
 /// `[−D, Aᵀ; A, 0]` (lower triangle) for a banded `A` (m × n) and `D` with
@@ -31,6 +31,32 @@ fn augmented(m: usize, n: usize, spread: f64) -> CscMatrix {
     CscMatrix::from_triplets(n + m, n + m, &t).unwrap()
 }
 
+/// The check for one backend: two refined solves with the same workspace
+/// agree exactly and converge.
+fn reuses<S: KktSolver<f64>>(solver: &S, k: &CscMatrix, form: KktForm, label: &str) {
+    let n = k.n_rows;
+    let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
+    let (num, _) = solver
+        .factorize(&sym, k, Regularization::default())
+        .unwrap();
+    let b: Vec<f64> = (0..n)
+        .map(|i| f64::from(u32::try_from((i * 37) % 11).unwrap()) - 5.0)
+        .collect();
+    let mut x = vec![0.0; n];
+    let mut work = RefineWorkspace::new();
+    let first = solver.solve_refined_with(&num, k, &b, &mut x, Refinement::default(), &mut work);
+    let x1 = x.clone();
+    let again = solver.solve_refined_with(&num, k, &b, &mut x, Refinement::default(), &mut work);
+    assert_eq!(first, again);
+    assert_eq!(x, x1);
+    assert!(first.converged, "{label}: {first:?}");
+    // The same without a shared workspace.
+    let mut y = vec![0.0; n];
+    let fresh = solver.solve_refined(&num, k, &b, &mut y, Refinement::default());
+    assert_eq!(fresh, first);
+    assert_eq!(y, x1);
+}
+
 #[test]
 fn refinement_reuses_its_workspace() {
     let (m, n) = (40, 120);
@@ -39,31 +65,19 @@ fn refinement_reuses_its_workspace() {
         n_primal: n,
         n_dual: m,
     };
-    for supernodal in [Some(false), Some(true)] {
-        let solver = FaerLdl { supernodal };
-        let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
-        let (num, _) = solver
-            .factorize(&sym, &k, Regularization::default())
-            .unwrap();
-        let b: Vec<f64> = (0..n + m)
-            .map(|i| f64::from(u32::try_from((i * 37) % 11).unwrap()) - 5.0)
-            .collect();
-        let mut x = vec![0.0; n + m];
-        let mut work = RefineWorkspace::new();
-        let first =
-            solver.solve_refined_with(&num, &k, &b, &mut x, Refinement::default(), &mut work);
-        let x1 = x.clone();
-        let again =
-            solver.solve_refined_with(&num, &k, &b, &mut x, Refinement::default(), &mut work);
-        assert_eq!(first, again);
-        assert_eq!(x, x1);
-        assert!(first.converged, "{supernodal:?}: {first:?}");
-        // The allocating convenience gives the same answer.
-        let mut z = vec![0.0; n + m];
-        assert_eq!(
-            solver.solve_refined(&num, &k, &b, &mut z, Refinement::default()),
-            first
+    for switch in [0.0, f64::INFINITY, 40.0] {
+        let own = SupernodalLdl::<f64>::new(
+            xingo_sparse::NaiveDense,
+            SupernodalOptions {
+                supernodal_switch: switch,
+                ..SupernodalOptions::default()
+            },
         );
-        assert_eq!(z, x);
+        reuses(&own, &k, form, "supernodal-ldl");
+    }
+    #[cfg(feature = "faer")]
+    for supernodal in [Some(false), Some(true)] {
+        let solver = xingo_sparse::FaerLdl { supernodal };
+        reuses(&solver, &k, form, "faer-ldl");
     }
 }

@@ -89,6 +89,7 @@
 //! | `Inertia`, `Regularization<T>`, `Refinement<T>`, `RefineReport<T>`, `KktForm`, `KktSolver<T>`, `KktError` | the same (§5.14, L1.5), plus `Default` for the option structs, `Regularization::{none, relative_to, is_quasi_definite}`, `KktForm::expected_inertia`, `KktError::Structure`, [`EQUILIBRATION_PASSES`]; the augmented inertia reads `{positive: m, negative: n}`; L1.5b: `Regularization::scale` with [`ShiftScale`] (shifts in the equilibrated matrix by default), `KktError::NotFinite`, [`RefineWorkspace`] and `KktSolver::solve_refined_with`, refinement by GMRES |
 //! | `FaerLdl`, `FaerSymbolic`, `FaerNumeric<T>` (feature `faer`) | the same (§5.15, L1.5), plus read-only accessors |
 //! | `DenseBlock<T>`, `DenseKernel<T>`, `NaiveDense`, `FaerDense`, `DenseError` | the same (§5.16, L1.5); `sytrf` also returns its permutation and `2×2` marks |
+//! | `SupernodalOptions`, `SymbolicLdl`, `NumericLdl<T>`, `SupernodalLdl<T, K>` | the same (§5.17, L1.6a), plus `SupernodalOptions::supernodal_switch` (the simplicial/supernodal switch), the accessors `SymbolicLdl::{n_supernodes, relaxation_zeros, is_simplicial, check_invariants}` and `NumericLdl::{order, n_supernodes, perm, scale}`, `SupernodalLdl::kernel`, the constants `PANEL` and `RELAX_CUTOFFS`; the structs carry private fields the solves need (a numeric factor solves after its symbolic phase is dropped), and `diag`/`blocks` hold the factor of `P K_reg Pᵀ` in the caller's units; `pivot_2x2` is all `false` until the `LBLᵀ` of L1.6b |
 //!
 //! ## 5.E What the tasks add
 //! * **L1.3** (done) — [`Perm`] and [`Pattern`] (§5.9), the orderings
@@ -125,8 +126,16 @@
 //!   against the natural order, one KKT step of an interior-point method);
 //!   complete item documentation. No solver path changes (nothing uses the
 //!   two new types yet).
-//! * **L1.6** — the own `SupernodalLdl<T, K>`, after the interior-point
-//!   method has measured faer.
+//! * **L1.6a** (done) — the own [`SupernodalLdl`] (§5.17): elimination
+//!   tree and relaxed supernodes on top of the postorder of §5.9, a
+//!   left-looking supernodal `LDLᵀ` with `1×1` pivots, the bumping of
+//!   step K3 with the sign each block expects and an exact count of the
+//!   bumped pivots, generic in `T` with the dense kernels of §5.16, solves
+//!   without allocation; the engine of §5.11 rewritten over one
+//!   garbage-collected workspace (same output). `FaerLdl` stays as the
+//!   optional backend and the oracle.
+//! * **L1.6b** — the `2×2` pivots of Bunch–Kaufman (`LBLᵀ`) for the
+//!   unregularized augmented system, through `DenseKernel::sytrf`.
 //!
 //! ## Purpose (the first edition, unchanged)
 //! The revised simplex method (Chapter 6) works with the basis matrix `B`
@@ -169,7 +178,9 @@
 //!   (Algorithm K) and iterative refinement (Algorithm F);
 //! * §5.15 `faer_ldl` (feature `faer`) — [`FaerLdl`] (Algorithms A, N, S);
 //! * §5.16 [`dense`] — [`DenseKernel`], [`NaiveDense`], `FaerDense`
-//!   (Algorithms P, B, T, G, S).
+//!   (Algorithms P, B, T, G, S);
+//! * §5.17 [`supernodal`] — [`SupernodalLdl`], our own supernodal `LDLᵀ`
+//!   (Algorithms A, N, U, D, S).
 //!
 //! ## Notation
 //! `B ∈ R^{m×m}`; *rows* `i` and basis *positions* `k` both range over
@@ -236,6 +247,7 @@ pub mod real;
 pub mod scaling;
 pub mod solve;
 mod store;
+pub mod supernodal;
 pub mod symbolic;
 pub mod triplets;
 pub mod update;
@@ -246,9 +258,9 @@ mod tests;
 
 /// The code blocks of the crate's README, compiled and run as doc-tests
 /// (`cargo test --doc`) so that the README never drifts from the API. The
-/// README is not the root documentation — this chapter is — and its KKT
-/// snippet needs `faer`, hence the gate.
-#[cfg(all(doctest, feature = "faer"))]
+/// README is not the root documentation — this chapter is. (Since L1.6a
+/// the KKT snippet runs on `SupernodalLdl`, so no feature is needed.)
+#[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDoctests;
 
@@ -273,6 +285,7 @@ pub use perm::{Pattern, Perm};
 pub use real::Real;
 pub use scaling::{Equilibration, Scaling};
 pub use solve::{HYPER_HISTORY_WEIGHT, SolveStats};
+pub use supernodal::{NumericLdl, SupernodalLdl, SupernodalOptions, SymbolicLdl};
 pub use symbolic::SymbolicLu;
 pub use triplets::Triplets;
 pub use update::{BasisUpdate, ForrestTomlin, RefactorReason, UpdateOutcome, UpdateStats};
