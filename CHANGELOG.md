@@ -5,7 +5,7 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
-## [Unreleased]
+## [0.3.0] — 2026-11-10
 
 ### Added
 
@@ -131,5 +131,6 @@ the LU's absolute pivot tolerance declares unscaled tiny columns singular;
 `solve` allocates once per factor on first use; `Triplets::to_csc` does
 not store exact-zero sums.
 
+[0.3.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.1.0
