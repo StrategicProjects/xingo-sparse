@@ -1,0 +1,55 @@
+# CI of the stand-alone mirror of `xingo-sparse` (the crate is developed in
+# the Xingó monorepo, https://github.com/StrategicProjects/xingo, whose CI
+# runs the same checks inside the workspace; this file is excluded from the
+# published package).
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy + test + docs (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, "1.90"] # stable and MSRV
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (default and no default features)
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --no-default-features -- -D warnings
+      - name: Test (default and no default features)
+        run: |
+          cargo test
+          cargo test --no-default-features
+      - name: Docs (default and no default features)
+        run: |
+          cargo doc --no-deps
+          cargo doc --no-deps --no-default-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Examples
+        run: |
+          cargo build --examples
+          cargo run --example basis_lu
+          cargo run --example ordering
+          cargo run --example kkt_ipm_step
+      - name: Package (dry run)
+        run: cargo publish --dry-run

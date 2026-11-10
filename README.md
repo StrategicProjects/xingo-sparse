@@ -207,6 +207,20 @@ Measured, not guessed (the decision log of the solver records each):
   of the wrong length).
 * **No `unsafe`** in this crate (faer has its own, audited, kernels).
 
+## Repository, issues and citation
+
+The crate is developed inside the Xingó monorepo
+([StrategicProjects/xingo](https://github.com/StrategicProjects/xingo),
+directory `crates/sparse`), where every change is validated together with
+the solver that uses it. This stand-alone repository,
+[StrategicProjects/xingo-sparse](https://github.com/StrategicProjects/xingo-sparse),
+is a read-only mirror of that directory (`git subtree split`, full history),
+updated at every release; it exists so that the library can be archived and
+cited on its own. Issues and pull requests about the crate are welcome in
+either repository. Each release of the mirror is archived on Zenodo; the DOI
+of the version you use is on the release page, and `CITATION.cff` carries
+the concept DOI once the first archive exists.
+
 ## Minimum supported Rust version
 
 1.90 (edition 2024), tested in CI together with stable.

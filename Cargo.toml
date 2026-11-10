@@ -1,22 +1,27 @@
 # xingo-sparse (PLAN.md trilha L1, D-0080): publishable on its own, with
 # its own version (D12); it depends on no other crate of the workspace
-# (xingo-core depends on it, D9).
+# (xingo-core depends on it, D9). Nothing is inherited from the workspace
+# (`*.workspace = true`), so that this directory also builds alone: it is
+# mirrored, by `git subtree split`, to the stand-alone repository below
+# (L1.7, D-0097), which Zenodo archives for the DOI. The values must stay
+# equal to the workspace's.
 [package]
 name = "xingo-sparse"
 version = "0.1.0"
 description = "Sparse linear algebra for optimization: generic CSC/CSR containers, threshold-pivoting LU with Forrest-Tomlin basis updates and hypersparse solves, fill-reducing orderings, scaling, and regularized KKT solvers for interior-point methods"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/StrategicProjects/xingo-sparse"
 readme = "README.md"
 documentation = "https://docs.rs/xingo-sparse"
 keywords = ["sparse", "linear-algebra", "lu", "simplex", "factorization"]
 categories = ["mathematics", "science", "algorithms"]
-# The package is the source, its tests, examples, README and CHANGELOG.
-# The proptest regression seeds are development state (replayed by
-# `cargo test` from a checkout, meaningless to a user of the crate).
-exclude = ["proptest-regressions/"]
+# The package is the source, its tests, examples, README, CHANGELOG and
+# licenses. The proptest regression seeds are development state (replayed
+# by `cargo test` from a checkout, meaningless to a user of the crate); the
+# workflow is the mirror's CI.
+exclude = ["proptest-regressions/", ".github/"]
 
 # docs.rs builds with `faer` so that `FaerLdl` and `FaerDense` appear.
 [package.metadata.docs.rs]
@@ -36,7 +41,7 @@ faer = ["dep:faer"]
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "sparse-linalg"] }
 
 [dev-dependencies]
-proptest.workspace = true
+proptest = "1.6"
 
 # The examples (task L1.7a) build matrices in code with `Triplets`, run
 # with `cargo run -p xingo-sparse --example <name>` and end in an `assert!`.
@@ -50,5 +55,19 @@ name = "ordering"
 name = "kkt_ipm_step"
 required-features = ["faer"]
 
-[lints]
-workspace = true
+# The workspace's lints, spelled out (see the header comment).
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Mathematical notation is kept (PLAN.md §2.3): allowed per module when declared.
+many_single_char_names = "allow"
+similar_names = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
