@@ -1097,6 +1097,10 @@ pub(crate) fn check_inertia(found: Inertia, expected: Inertia) -> Result<Inertia
 }
 
 #[cfg(test)]
+// Exact equality is the property under test here (the assembly and the
+// scaling are products and sums of powers of two, bit for bit); clippy 1.90
+// flags it, 1.99 does not.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{Col, Row};
