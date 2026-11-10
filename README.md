@@ -6,6 +6,8 @@
 ![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24095312.svg)](https://doi.org/10.5281/zenodo.24095312)
 
+**Website:** <https://strategicprojects.github.io/xingo-sparse/> (overview, measured results, API reference).
+
 Sparse linear algebra **for optimization solvers**, in pure Rust: the
 factorizations a simplex method and an interior-point method need, over
 compressed sparse containers generic in the scalar type. It is the linear
