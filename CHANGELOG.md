@@ -5,7 +5,7 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
-## [0.1.0] — Unreleased
+## [0.1.0] — 2026-11-09
 
 The first release: the sparse linear algebra of the Xingó solver, split
 out as a crate that depends on nothing in the solver.

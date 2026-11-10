@@ -3,7 +3,7 @@
 # (xingo-core depends on it, D9).
 [package]
 name = "xingo-sparse"
-version = "0.1.0-dev"
+version = "0.1.0"
 description = "Sparse linear algebra for optimization: generic CSC/CSR containers, threshold-pivoting LU with Forrest-Tomlin basis updates and hypersparse solves, fill-reducing orderings, scaling, and regularized KKT solvers for interior-point methods"
 edition.workspace = true
 rust-version.workspace = true
