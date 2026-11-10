@@ -120,6 +120,8 @@
   .sub { color: var(--muted); margin: 0 0 30px; max-width: 66ch; }
 
   .grid { display: grid; gap: 18px; }
+  .grid > * { min-width: 0; }
+  .panel pre { max-width: 100%; }
   .grid.f3 { grid-template-columns: repeat(3, 1fr); }
   .grid.f2 { grid-template-columns: repeat(2, 1fr); }
   @media (max-width: 860px) { .grid.f3, .grid.f2 { grid-template-columns: 1fr; } }
@@ -316,25 +318,28 @@ refinement: 2 GMRES step(s), residual <span class="c-ok">1.5e-16</span> (recompu
       <h2>Install &amp; run</h2>
       <p class="sub">Rust 1.90 or later. The README's examples are compiled as doc-tests, so they cannot drift from the API; changes between versions are in the <a href="https://github.com/StrategicProjects/xingo-sparse/blob/main/CHANGELOG.md">changelog</a>.</p>
       <div class="panel" style="margin-bottom:18px">
-<pre><code><span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse                         <span class="c-cmt"># with the faer backend</span>
-<span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse --no-default-features   <span class="c-cmt"># no dependency at all</span></code></pre>
+<pre><code><span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse                        <span class="c-cmt"># with faer's kernels</span>
+<span class="c-prompt">$</span> <span class="c-cmd">cargo</span> add xingo-sparse --no-default-features  <span class="c-cmt"># no dependency</span></code></pre>
       </div>
       <div class="grid f2">
         <div>
           <div class="panel">
 <pre><code><span class="c-cmt">// a simplex basis: factorize, solve, exchange one column</span>
-<span class="c-kw">use</span> xingo_sparse::{<span class="c-ty">Col</span>, <span class="c-ty">ColumnRef</span>, <span class="c-ty">Lu</span>, <span class="c-ty">LuFactor</span>, <span class="c-ty">Row</span>, <span class="c-ty">Sign</span>, <span class="c-ty">SparseVec</span>};
+<span class="c-kw">use</span> xingo_sparse::{<span class="c-ty">Col</span>, <span class="c-ty">ColumnRef</span>, <span class="c-ty">Lu</span>, <span class="c-ty">LuFactor</span>,
+    <span class="c-ty">Row</span>, <span class="c-ty">Sign</span>, <span class="c-ty">SparseVec</span>};
 
 <span class="c-kw">let</span> <span class="c-kw">mut</span> heading = vec![<span class="c-ty">ColumnRef</span>::<span class="c-cmd">Structural</span>(<span class="c-ty">Col</span>(<span class="c-flag">0</span>)),
                        <span class="c-ty">ColumnRef</span>::<span class="c-cmd">Logical</span>(<span class="c-ty">Row</span>(<span class="c-flag">1</span>), <span class="c-ty">Sign</span>::Plus)];
-<span class="c-kw">let</span> <span class="c-kw">mut</span> lu = <span class="c-ty">Lu</span>::&lt;<span class="c-ty">f64</span>&gt;::<span class="c-cmd">default</span>();   <span class="c-cmt">// Forrest–Tomlin by default</span>
+<span class="c-cmt">// Forrest–Tomlin is the default update</span>
+<span class="c-kw">let</span> <span class="c-kw">mut</span> lu = <span class="c-ty">Lu</span>::&lt;<span class="c-ty">f64</span>&gt;::<span class="c-cmd">default</span>();
 lu.<span class="c-cmd">factorize</span>(&amp;(heading.<span class="c-cmd">as_slice</span>(), &amp;a))?;
 
 <span class="c-kw">let</span> <span class="c-kw">mut</span> x = <span class="c-ty">SparseVec</span>::<span class="c-cmd">from_dense</span>(&amp;[<span class="c-flag">4.0</span>, <span class="c-flag">5.0</span>]);
 lu.<span class="c-cmd">ftran</span>(&amp;<span class="c-kw">mut</span> x);                 <span class="c-cmt">// x = B⁻¹ b</span>
 
 lu.<span class="c-cmd">ftran_for_update</span>(&amp;<span class="c-kw">mut</span> alpha);  <span class="c-cmt">// the entering column</span>
-lu.<span class="c-cmd">update</span>(<span class="c-flag">1</span>, alpha.<span class="c-cmd">get</span>(<span class="c-flag">1</span>))?;      <span class="c-cmt">// Updated, or RefactorNeeded</span></code></pre>
+<span class="c-cmt">// Updated, or RefactorNeeded</span>
+lu.<span class="c-cmd">update</span>(<span class="c-flag">1</span>, alpha.<span class="c-cmd">get</span>(<span class="c-flag">1</span>))?;</code></pre>
           </div>
         </div>
         <div>
@@ -343,7 +348,8 @@ lu.<span class="c-cmd">update</span>(<span class="c-flag">1</span>, alpha.<span 
 <span class="c-kw">use</span> xingo_sparse::{<span class="c-ty">Amd</span>, <span class="c-ty">Natural</span>, <span class="c-ty">Ordering</span>, <span class="c-ty">OrderingTarget</span>};
 
 <span class="c-kw">let</span> s = a.<span class="c-cmd">pattern</span>();                   <span class="c-cmt">// values dropped</span>
-<span class="c-kw">let</span> p = <span class="c-ty">Amd</span>::<span class="c-cmd">default</span>().<span class="c-cmd">order</span>(&amp;s, <span class="c-ty">OrderingTarget</span>::Symmetric)?;
+<span class="c-kw">let</span> p = <span class="c-ty">Amd</span>::<span class="c-cmd">default</span>()
+    .<span class="c-cmd">order</span>(&amp;s, <span class="c-ty">OrderingTarget</span>::Symmetric)?;
 <span class="c-kw">let</span> nnz_l = s.<span class="c-cmd">cholesky_nnz</span>(&amp;p)?;       <span class="c-cmt">// Liu's row subtrees</span>
 
 <span class="c-cmt">// the same, in the natural order, for comparison</span>
