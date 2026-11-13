@@ -21,7 +21,7 @@ categories = ["mathematics", "science", "algorithms"]
 # licenses. The proptest regression seeds are development state (replayed
 # by `cargo test` from a checkout, meaningless to a user of the crate); the
 # workflows are the mirror's CI and Pages; site/ is the mirror's landing page.
-exclude = ["proptest-regressions/", ".github/", "site/"]
+exclude = ["proptest-regressions/", ".github/", "site/", ".zenodo.json"]
 
 # docs.rs builds with `faer` so that `FaerLdl` and `FaerDense` appear.
 [package.metadata.docs.rs]

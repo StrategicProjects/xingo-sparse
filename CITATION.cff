@@ -6,7 +6,9 @@ abstract: "Sparse linear algebra for optimization in pure Rust: generic CSC/CSR 
 authors:
   - family-names: Leite
     given-names: André
-license: "MIT OR Apache-2.0"
+license:
+  - MIT
+  - Apache-2.0
 repository-code: "https://github.com/StrategicProjects/xingo-sparse"
 url: "https://strategicprojects.github.io/xingo-sparse/"
 doi: 10.5281/zenodo.24095312

@@ -1,0 +1,34 @@
+{
+  "title": "xingo-sparse: sparse linear algebra for optimization solvers",
+  "upload_type": "software",
+  "description": "<p>Sparse linear algebra for optimization in pure Rust: generic CSC/CSR containers, a threshold-pivoting LU for simplex bases with Forrest-Tomlin updates and hypersparse solves, AMD and COLAMD orderings, scaling, and regularized, refined KKT solvers for interior-point methods. The linear algebra layer of the Xingó solver.</p><p>Dual-licensed under MIT or Apache-2.0, at your option.</p>",
+  "creators": [
+    {
+      "name": "Leite, André"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "sparse linear algebra",
+    "LU factorization",
+    "Forrest-Tomlin",
+    "AMD",
+    "COLAMD",
+    "KKT",
+    "interior-point method",
+    "simplex method",
+    "Rust"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/StrategicProjects/xingo-sparse",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://strategicprojects.github.io/xingo-sparse/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ]
+}
