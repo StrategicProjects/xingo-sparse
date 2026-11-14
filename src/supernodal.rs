@@ -285,7 +285,8 @@
 //!     made to it (M2: a dual column coupled only to pairs below it
 //!     receives updates that cancel to rounding noise, and the noise
 //!     must not pass for a pivot); for a column delayed into
-//!     this block, the scale it was flagged with where it came from (a
+//!     this block, the scale it was flagged with where it came from and
+//!     the terms of the Schur complement step M5 formed for it (a
 //!     carried diagonal that is already rounding noise must not be judged
 //!     against itself); and the terms `l_jk b_k l_jk` of the pivots `k`
 //!     before it in the block. Measured on the random systems of the
@@ -319,7 +320,13 @@
 //!     minutes, and `u = 10⁻⁴` sits in between (tables in the decision
 //!     log).
 //! M5. [Delay.] Each removed column `k` goes to the parent with its
-//!     reference scale and its Schur complement after the active pivots: `a_kk − l_k · u_k`, the cross
+//!     reference scale — raised to `|a_kk|` and to the largest term of
+//!     `l_k · u_k`: the pivots the block took *after* `k` was flagged may
+//!     cancel in that sum (two singleton rows of `A` on one column: the
+//!     second, flagged with an exact zero and scale `0`, got `b² − (ab)²/a²
+//!     = 4·10⁻¹⁶` from the pivots of the first and was taken at the root
+//!     with the expected inertia; 0.3.1) —
+//!     and its Schur complement after the active pivots: `a_kk − l_k · u_k`, the cross
 //!     terms `a_{k'k} − l_{k'} · u_k` with the removed columns `k'` after
 //!     it, and `a_{rk} − l_r · u_k` for `r ∈ R_s` (`l` the rows of `L₂₁`,
 //!     `u` the rows of `U`: `l_r B₁ l_kᵀ = l_r · u_k`). Its row `l_k` stays
@@ -1387,6 +1394,25 @@ fn strided_dot<T: Real>(
     acc
 }
 
+/// `max_i |x_i y_i|` over two strided rows of column-major blocks: the
+/// largest term of the sum [`strided_dot`] forms (step M5).
+#[inline]
+fn strided_term_max<T: Real>(
+    x: &[T],
+    x0: usize,
+    xs: usize,
+    y: &[T],
+    y0: usize,
+    ys: usize,
+    len: usize,
+) -> T {
+    let mut big = T::ZERO;
+    for i in 0..len {
+        big = big.max((x[x0 + i * xs] * y[y0 + i * ys]).abs());
+    }
+    big
+}
+
 /// Steps M3–M6 on the block `a` of one supernode: `w` active columns
 /// (rows `0..w` their diagonal block, rows `w..` the pattern rows `R_s`),
 /// `cols` their analyzed columns (`w` entries). On success `a` is the
@@ -1705,6 +1731,17 @@ fn pivot_block<T: Real, K: DenseKernel<T>>(
     for (r, &(k, scale)) in pw.removed.iter().enumerate() {
         let schur = |row: usize| strided_dot(&panel.data, row, nb, &pw.u, r, nz, wa);
         let diag_k = at(a, k, k) - schur(r);
+        // The terms of this sum join the scale (step M5): pivots chosen
+        // after the column was flagged may cancel in it.
+        let scale = scale.max(at(a, k, k).abs()).max(strided_term_max(
+            &panel.data,
+            r,
+            nb,
+            &pw.u,
+            r,
+            nz,
+            wa,
+        ));
         let cross: Vec<T> = (r + 1..nz)
             .map(|r2| at(a, pw.removed[r2].0, k) - schur(r2))
             .collect();

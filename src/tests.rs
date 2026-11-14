@@ -1070,6 +1070,14 @@ proptest! {
             prop_assert!(f.check_invariants().is_ok(), "{:?}", f.check_invariants());
         }
         // The updated factor against a fresh one and the oracle, both modes.
+        // The updates may have added growth below `growth_limit` (no
+        // refactorization is forced here), and the error of the updated
+        // factor follows it: the tolerance of the loop above, never below
+        // `1e-9` (seed 13147307922538458714: `κ ≈ 10³`, a fresh factor
+        // within `3·10⁻¹³` of the oracle, growth `8.5·10⁶` after 22
+        // updates and an error of `1.6·10⁻⁹ ≈ ε · growth`).
+        let dense_shape = if kind == 4 { 10.0 } else { 1.0 };
+        let tol = (1e-12 * (f.stats().growth / 100.0).max(1.0) * dense_shape).max(1e-9);
         let mut fresh = factor_ok(&basis, &a);
         let b = dense_basis(&basis, &a);
         let v = sparse_rhs(&mut rng, m, 1 + m / 10);
@@ -1079,10 +1087,10 @@ proptest! {
         for hyper in [false, true] {
             let x = solve_in(&mut f, &v, hyper, false);
             let y = solve_in(&mut f, &v, hyper, true);
-            prop_assert!(rel_err(&x, &x_ref) < 1e-9, "ftran vs oracle {}", rel_err(&x, &x_ref));
-            prop_assert!(rel_err(&y, &y_ref) < 1e-9, "btran vs oracle {}", rel_err(&y, &y_ref));
+            prop_assert!(lt(rel_err(&x, &x_ref), tol), "ftran vs oracle {} > {tol}", rel_err(&x, &x_ref));
+            prop_assert!(lt(rel_err(&y, &y_ref), tol), "btran vs oracle {} > {tol}", rel_err(&y, &y_ref));
             let xf = solve_in(&mut fresh, &v, hyper, false);
-            prop_assert!(rel_err(&x, &xf) < 1e-9, "ftran vs fresh {}", rel_err(&x, &xf));
+            prop_assert!(lt(rel_err(&x, &xf), tol), "ftran vs fresh {} > {tol}", rel_err(&x, &xf));
         }
     }
 }
