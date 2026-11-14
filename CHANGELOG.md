@@ -5,6 +5,17 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [0.3.2] — 2026-11-14
+
+### Changed
+
+* Documentation only: the README (and the landing page) gain the section
+  "Authorship, credits and disclaimer" — who writes the crate, the authors
+  of the algorithms it implements and of the projects studied as
+  references, and that this is an independent project provided "as is".
+  No change to the code; 0.3.1 was released on GitHub and Zenodo but not
+  on crates.io, so this is the version that carries its fix there.
+
 ## [0.3.1] — 2026-11-14
 
 ### Fixed
@@ -159,6 +170,7 @@ the LU's absolute pivot tolerance declares unscaled tiny columns singular;
 `solve` allocates once per factor on first use; `Triplets::to_csc` does
 not store exact-zero sums.
 
+[0.3.2]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.2
 [0.3.1]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.2.0
