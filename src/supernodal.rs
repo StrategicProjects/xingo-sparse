@@ -2750,10 +2750,9 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
         }
         let ns = st.n_supernodes();
         // S1.
-        for s in 0..ns {
+        for (s, blk) in numeric.blocks.iter().enumerate().take(ns) {
             let (s0, s1) = st.cols(s);
             let nc = s1 - s0;
-            let blk = &numeric.blocks[s];
             let nr = blk.rows;
             let pat = st.pattern(s);
             if nc == 1 {

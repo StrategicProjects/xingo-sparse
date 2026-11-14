@@ -346,8 +346,8 @@ fn curtis_reid<T: Real>(a: &CscMatrix<T>, max_iters: usize) -> (Vec<f64>, Vec<f6
             *o = c * zk;
         }
         for j in 0..n {
-            for p in a.col_ptr[j]..a.col_ptr[j + 1] {
-                let i = a.row_idx[p] as usize;
+            for &i in &a.row_idx[a.col_ptr[j]..a.col_ptr[j + 1]] {
+                let i = i as usize;
                 out[i] += z[m + j];
                 out[m + j] += z[i];
             }
