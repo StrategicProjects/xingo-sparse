@@ -5,6 +5,34 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [0.3.1] — 2026-11-14
+
+### Fixed
+
+* `SupernodalLdl`, `LBLᵀ` path (`Regularization::none()`): a delayed
+  column now carries, in its reference scale, the terms of the Schur
+  complement formed when it is handed to the parent supernode (Chapter
+  5.17, step M5). The pivots a supernode takes *after* flagging a column
+  could cancel in that sum, and the rounding noise left (`4·10⁻¹⁶` beside
+  terms of order one) was judged against a scale of zero and taken as a
+  pivot: on a singular augmented system — two singleton rows of `A` on the
+  same column — the factorization returned the expected inertia instead of
+  `KktError::ZeroPivot`, for one of the three option sets the tests
+  exercise. Found by the random KKT systems of the test suite; the seed is
+  now a saved regression case. Factors of nonsingular systems are
+  unchanged.
+
+### Changed
+
+* Tests only: the final oracle check of `hypersparse_solves_match_dense`
+  follows the growth the updates added (the tolerance its loop already
+  used), never below `10⁻⁹` — after 22 Forrest–Tomlin updates with growth
+  `8.5·10⁶`, below `growth_limit`, an error of `1.6·10⁻⁹ ≈ ε · growth` on a
+  basis with `κ ≈ 10³` is the expected accuracy, not a defect.
+* `CITATION.cff` lists the two licenses as CFF 1.2.0 requires and a
+  `.zenodo.json` carries the archive metadata (releases 0.2.0 and 0.3.0
+  were not archived by Zenodo: "Citation metadata load failed").
+
 ## [0.3.0] — 2026-11-10
 
 ### Added
@@ -131,6 +159,7 @@ the LU's absolute pivot tolerance declares unscaled tiny columns singular;
 `solve` allocates once per factor on first use; `Triplets::to_csc` does
 not store exact-zero sums.
 
+[0.3.1]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.1.0

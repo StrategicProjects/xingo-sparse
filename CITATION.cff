@@ -12,8 +12,8 @@ license:
 repository-code: "https://github.com/StrategicProjects/xingo-sparse"
 url: "https://strategicprojects.github.io/xingo-sparse/"
 doi: 10.5281/zenodo.24095312
-version: 0.3.0
-date-released: 2026-11-10
+version: 0.3.1
+date-released: 2026-11-14
 keywords:
   - sparse linear algebra
   - LU factorization
