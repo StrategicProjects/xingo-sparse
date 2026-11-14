@@ -264,6 +264,30 @@ concept DOI [10.5281/zenodo.24095312](https://doi.org/10.5281/zenodo.24095312)
 always resolves to the latest version, each release has its own DOI on its
 release page, and `CITATION.cff` has the citation metadata.
 
+## Authorship, credits and disclaimer
+
+`xingo-sparse` is written and maintained by **André Leite** as the linear
+algebra layer of the [Xingó](https://github.com/StrategicProjects/xingo)
+solver, developed at [StrategicProjects](https://github.com/StrategicProjects).
+
+The algorithms are those of their authors, implemented here from the
+published papers: Suhl & Suhl (LU for simplex bases), Forrest & Tomlin
+(basis updates), Gilbert & Peierls and Hall & McKinnon (hypersparse solves),
+Amestoy, Davis & Duff (AMD), Davis, Gilbert, Larimore & Ng (COLAMD), Liu
+(elimination trees), Bunch & Kaufman and Duff & Reid (symmetric indefinite
+pivoting and delayed pivots; MA57), Altman & Gondzio and Arioli, Duff,
+Gratton & Pralet (regularization and refinement). [HiGHS](https://highs.dev),
+[SuiteSparse](https://github.com/DrTimothyAldenDavis/SuiteSparse) (AMD,
+COLAMD, CHOLMOD) and [faer](https://crates.io/crates/faer) were studied as
+references and used as oracles in the tests; faer (MIT) is also the optional
+dense-kernel dependency. Each chapter of the sources lists its references.
+
+This is an independent project: it is not affiliated with, maintained by or
+endorsed by the HiGHS, SuiteSparse, HSL or faer authors, and it includes no
+code from them (faer is linked only through the optional `faer` feature).
+All names and trademarks belong to their owners. The software is provided
+"as is", without warranty of any kind, under the licenses below.
+
 ## Minimum supported Rust version
 
 1.90 (edition 2024), tested in CI together with stable.

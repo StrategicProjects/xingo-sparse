@@ -174,6 +174,7 @@
       <a class="hide-sm" href="#design">Design</a>
       <a class="hide-sm" href="#install">Install</a>
       <a class="hide-sm" href="#limits">Limitations</a>
+      <a class="hide-sm" href="#credits">Credits</a>
       <a class="hide-sm" href="api/xingo_sparse/">API</a>
       <a class="btn" href="https://github.com/StrategicProjects/xingo-sparse">GitHub ↗</a>
     </nav>
@@ -366,7 +367,7 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
 
   <section id="limits" class="alt">
     <div class="wrap">
-      <h2>Known limitations of 0.2</h2>
+      <h2>Known limitations of 0.3</h2>
       <p class="sub">Each one is measured and recorded, with the measurement, in the solver's decision log. They are the next releases' work, not surprises.</p>
       <div class="card scroll">
         <table class="cmp">
@@ -382,11 +383,23 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
       </div>
     </div>
   </section>
+
+  <section id="credits">
+    <div class="wrap">
+      <h2>Authorship, credits and disclaimer</h2>
+      <p class="sub">Who wrote this, whose work it stands on, and what it does not claim.</p>
+      <div class="grid f3">
+        <div class="card"><div class="ic">✍️</div><h3>Authorship</h3><p><code>xingo-sparse</code> is written and maintained by <strong>André Leite</strong> as the linear algebra layer of the <a href="https://github.com/StrategicProjects/xingo">Xingó</a> solver, developed at <a href="https://github.com/StrategicProjects">StrategicProjects</a>. To cite it, use the <a href="https://doi.org/10.5281/zenodo.24095312">Zenodo DOI</a> or the repository's <code>CITATION.cff</code>.</p></div>
+        <div class="card"><div class="ic">🙏</div><h3>Credits</h3><p>The algorithms are those of their authors, implemented here from the published papers: Suhl &amp; Suhl (LU for simplex bases), Forrest &amp; Tomlin (basis updates), Gilbert &amp; Peierls and Hall &amp; McKinnon (hypersparse solves), Amestoy, Davis &amp; Duff (AMD), Davis, Gilbert, Larimore &amp; Ng (COLAMD), Liu (elimination trees), Bunch &amp; Kaufman and Duff &amp; Reid (symmetric indefinite pivoting, delayed pivots, MA57), Altman &amp; Gondzio and Arioli, Duff, Gratton &amp; Pralet (regularization and refinement). <a href="https://highs.dev">HiGHS</a>, <a href="https://github.com/DrTimothyAldenDavis/SuiteSparse">SuiteSparse</a> (AMD, COLAMD, CHOLMOD) and <a href="https://crates.io/crates/faer">faer</a> were studied as references and used as oracles in the tests; faer (MIT) is also the optional dense-kernel dependency. Each chapter of the sources lists its references.</p></div>
+        <div class="card"><div class="ic">⚖️</div><h3>Disclaimer</h3><p>This is an independent project. It is not affiliated with, maintained by or endorsed by the HiGHS, SuiteSparse, HSL or faer authors, and includes no code from them (faer is linked only through the optional <code>faer</code> feature). All names and trademarks belong to their owners. The software is provided "as is", without warranty of any kind, under the terms of the MIT and Apache-2.0 licenses.</p></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <footer>
   <div class="wrap foot-inner">
-    <div><strong>xingo-sparse</strong> · MIT or Apache-2.0 · the linear algebra layer of the <a href="https://github.com/StrategicProjects/xingo">Xingó</a> solver · André Leite</div>
+    <div><strong>xingo-sparse</strong> · MIT or Apache-2.0 · the linear algebra layer of the <a href="https://github.com/StrategicProjects/xingo">Xingó</a> solver · © 2026 André Leite · independent project, provided "as is" · <a href="#credits">authorship &amp; credits</a></div>
     <div class="foot-links">
       <a href="https://github.com/StrategicProjects/xingo-sparse">Repository</a>
       <a href="https://crates.io/crates/xingo-sparse">crates.io</a>
