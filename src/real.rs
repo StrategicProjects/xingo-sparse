@@ -22,8 +22,11 @@
 //!   `x = 0` (a structural test: is the entry stored?).
 //!
 //! ## Requirements on `T`
-//! (R1) The field operations are the correctly rounded ones of `T` (no
-//!      fused or reassociated arithmetic is assumed anywhere).
+//! (R1) Each field operation is a deterministic function of its operands
+//!      with relative error at most `c_T · ε_T`, `c_T ≤ 4` (no fused or
+//!      reassociated arithmetic is assumed anywhere). For `f64` these are
+//!      the correctly rounded operations (`c = 1/2`); for the double-double
+//!      of `xingo-extprec` they are faithful with proven bounds (D-0109).
 //! (R2) `PartialOrd` is a total order on the values that occur: NaN never
 //!      enters a factorization (debug builds assert it in the comparisons).
 //! (R3) `Sum` adds in iteration order starting from the type's additive
