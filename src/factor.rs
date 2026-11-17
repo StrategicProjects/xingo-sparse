@@ -289,6 +289,35 @@ pub struct LuOptions {
     /// zero by the elimination and the update (`1e-12`; the solver's
     /// `Tolerances::zero`).
     pub drop_tol: f64,
+    /// Limit `M` on the multipliers of a Forrest–Tomlin row eta (step U4′
+    /// of Chapter 5.5): an update whose elimination needs `|μ_k| > M` is
+    /// not applied and asks for a refactorization
+    /// ([`crate::RefactorReason::Unstable`]). `f64::INFINITY` disables the
+    /// test. A growth limit, not a magnitude of rounding noise: it does not
+    /// depend on the scalar (Rule P). Default `1e6`.
+    ///
+    /// *The default (task L1.8, D-0113).* Measured with
+    /// `xingo-extprec`'s example `ft_limit`: 90 exchanges on bases of
+    /// order 150 (three families, five seeds), every third with a pivot
+    /// `α_r` of `10⁻²` down to `10⁻²²`, in `f64` and double-double, the
+    /// updated factor against a fresh one (quotient of scaled FTRAN
+    /// residuals). Without the limit the worst quotient was `5.5·10⁹` in
+    /// `f64` and `4·10¹⁶` in double-double; with `10⁶`, `3.6·10⁷` and
+    /// `8.7·10⁷`, and no update refused on the sequences without a tiny
+    /// pivot (`α_r ≈ 10⁻²`). Smaller limits cut the loss further (`10³`:
+    /// `1.3·10⁴` and `1.6·10⁵`) but refuse ordinary updates: `10³` 4.5 %
+    /// and `10⁴` 1.5 % of those sequences, and with `10⁴` the property
+    /// test of the crate whose pivots are at least half the largest entry
+    /// of `α` meets refused updates (none with `10⁵` or `10⁶` in 6 000
+    /// cases). No value met both targets of the experiment (quotient
+    /// `≤ 10⁴` in both scalars, under 5 % refusals among the updates with
+    /// `|α_r| ≥ 10⁻⁵ ‖α‖∞`, which there include the ordinary updates right
+    /// after a tiny pivot — the ones the limit is meant to refuse). A
+    /// simplex method that protects itself otherwise (the ratio test, a
+    /// comparison of the pivot column and row) may prefer
+    /// `f64::INFINITY`: `xingo-simplex` does, since `10⁶` would refuse
+    /// updates on 7 of the 93 Netlib problems.
+    pub update_multiplier_limit: f64,
 }
 
 /// Column pre-orders available to the dynamic LU ([`Lu::set_pre_order`];
@@ -298,6 +327,10 @@ pub enum PreOrder {
     /// [`crate::Colamd`] with its defaults on the columns of the bump.
     Colamd,
 }
+
+/// The default of [`LuOptions::update_multiplier_limit`] (task L1.8; the
+/// experiment is in the documentation of the field).
+const MULT_DEFAULT: f64 = 1e6;
 
 impl Default for LuOptions {
     fn default() -> Self {
@@ -312,6 +345,7 @@ impl Default for LuOptions {
             hyper_rhs_density: 0.10,
             hyper_result_density: 0.10,
             drop_tol: 1e-12,
+            update_multiplier_limit: MULT_DEFAULT,
         }
     }
 }
@@ -339,9 +373,9 @@ impl LuOptions {
         }
     }
 
-    /// `search_limit ≥ 1`, `rel_pivot_tol ∈ (0, 1]`, and the tolerances
-    /// finite and non-negative (asserted in debug builds when the options
-    /// are installed).
+    /// `search_limit ≥ 1`, `rel_pivot_tol ∈ (0, 1]`, the tolerances
+    /// finite and non-negative, and `update_multiplier_limit > 0` (possibly
+    /// infinite); asserted in debug builds when the options are installed.
     fn is_valid(&self) -> bool {
         let finite_nonneg = |x: f64| x.is_finite() && !lt(x, 0.0);
         self.search_limit >= 1
@@ -350,6 +384,7 @@ impl LuOptions {
             && finite_nonneg(self.abs_pivot_tol)
             && finite_nonneg(self.drop_tol)
             && finite_nonneg(self.update_stability_tol)
+            && lt(0.0, self.update_multiplier_limit)
     }
 }
 

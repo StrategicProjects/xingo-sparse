@@ -43,6 +43,25 @@
 //!     [`UpdateOutcome::RefactorNeeded`]`(`[`RefactorReason::Unstable`]`)`.
 //!     In both cases nothing has been modified: the factor still represents
 //!     `B`.
+//! U4′. \[Multipliers; task L1.8.\] Let `M_μ = max_k |μ_k|` over the row
+//!     eta of U3 (`0` if it is empty). If `M_μ > M`
+//!     ([`LuOptions::update_multiplier_limit`]), return
+//!     [`UpdateOutcome::RefactorNeeded`]`(`[`RefactorReason::Unstable`]`)`;
+//!     nothing has been modified. U3 divides by the diagonals of the later
+//!     rows without interchanges, so a diagonal accepted when it was tiny
+//!     relative to its column becomes a divisor later, and the row eta of
+//!     *that* update carries multipliers of `10⁹`–`10¹¹`; the backward
+//!     error of the updated factor grows with them (the known weakness of
+//!     Forrest–Tomlin against Bartels–Golub, which interchanges rows to
+//!     bound them). The test of U4 compares two orders of summation of the
+//!     same terms and does not see it: measured in `f64` with the default
+//!     options (task L1.8, D-0113), updated factors up to `5·10⁹` times less
+//!     accurate than fresh ones with a U4 statistic between `0` and
+//!     `2·10⁻¹⁰`, the worst updates being the ordinary ones right after the
+//!     tiny pivot. In double-double the absolute pivot tolerance of Rule P
+//!     (Chapter 5.3) no longer stops the tiny pivot itself, and this test
+//!     is the guard. The limit is a growth bound and does not scale with
+//!     the scalar.
 //! U5. [Commit.] Delete the old column `r` and the off-diagonal row `p` from
 //!     both copies of `U`; insert the spike entries `s_i` (`i ≠ p`,
 //!     `|s_i| > ε_drop`) as the new column `r`; set `u_{pr} ← d`; move
@@ -121,6 +140,13 @@
 //! BTRAN after `k` updates agree with a fresh factorization of the updated
 //! basis (property test, relative error ≤ 1e-9).
 //!
+//! (F4) [`UpdateStats::max_multiplier`] is the largest `|μ_k|` of the row
+//!      etas stored since the last factorization, and at most
+//!      [`LuOptions::update_multiplier_limit`] (asserted in debug builds
+//!      after every commit). It is a running maximum, reset to `0` by
+//!      every factorization ([`BasisUpdate::reset`]) and never formed by
+//!      differences: it cannot drift.
+//!
 //! ## References
 //! Forrest & Tomlin, "Updated triangular factors of the basis to maintain
 //! sparsity in the product form simplex method", Math. Programming 2(1),
@@ -150,8 +176,10 @@ pub enum RefactorReason {
     /// Growth added by the updates above `growth_limit` (applied; see
     /// [`UpdateStats::update_growth`]).
     Growth,
-    /// The new diagonal disagrees with `α_r · u_old`: the update was
-    /// **not** applied and the factor still represents the old basis.
+    /// The new diagonal disagrees with `α_r · u_old` (step U4), or the row
+    /// eta needs a multiplier above [`LuOptions::update_multiplier_limit`]
+    /// (step U4′): the update was **not** applied and the factor still
+    /// represents the old basis.
     Unstable,
 }
 
@@ -179,6 +207,9 @@ pub struct UpdateStats {
     /// factorization). The policy compares it with
     /// [`LuOptions::growth_limit`].
     pub update_growth: f64,
+    /// Largest `|μ_k|` stored in a row eta since the last factorization
+    /// (step U4′ of Chapter 5.5; `0` without row etas), as an `f64`.
+    pub max_multiplier: f64,
 }
 
 /// A basis-update policy over the stored factors (the contract's
@@ -300,7 +331,7 @@ impl<T: Real> BasisUpdate<T> for ForrestTomlin<T> {
 
         // U2–U3. Eliminate the spike row (the factor is not modified).
         let mut ws = std::mem::take(&mut f.ws);
-        let (eta, d, zeta) = eliminate_spike_row(f, opts, tau, p, &mut ws);
+        let (eta, d, zeta, max_mu) = eliminate_spike_row(f, opts, tau, p, &mut ws);
         f.ws = ws;
 
         // U4. Singularity and stability tests (nothing modified yet).
@@ -319,9 +350,20 @@ impl<T: Real> BasisUpdate<T> for ForrestTomlin<T> {
         ) {
             return Ok(UpdateOutcome::RefactorNeeded(RefactorReason::Unstable));
         }
+        // U4′. The multipliers of the row eta.
+        if lt(T::from_f64(opts.update_multiplier_limit), max_mu) {
+            return Ok(UpdateOutcome::RefactorNeeded(RefactorReason::Unstable));
+        }
 
         // U5. Commit.
         self.commit(f, opts, r, tau, p, d, eta);
+        self.stats.max_multiplier = self.stats.max_multiplier.max(max_mu.to_f64());
+        debug_assert!(
+            !lt(opts.update_multiplier_limit, self.stats.max_multiplier),
+            "(F4): {} > {}",
+            self.stats.max_multiplier,
+            opts.update_multiplier_limit
+        );
         debug_assert!(f.check_invariants().is_ok(), "{:?}", f.check_invariants());
 
         // U6. Refactorization policy.
@@ -576,8 +618,8 @@ impl<T: Real> ForrestTomlin<T> {
 }
 
 /// Steps U2–U3: returns the row eta `(p_k, μ_k)`, the new diagonal
-/// `d = σ` and the scale `ζ = |s_p| + Σ |μ_k s_{p_k}|` of the terms
-/// summed into it. The work array `ws.work` (by positions) is zero on
+/// `d = σ`, the scale `ζ = |s_p| + Σ |μ_k s_{p_k}|` of the terms summed
+/// into it and `M_μ = max_k |μ_k|` (step U4′; `0` for an empty eta). The work array `ws.work` (by positions) is zero on
 /// entry and on exit.
 ///
 /// The steps `k` with a nonzero `w_{q_k}` are visited in increasing
@@ -590,7 +632,7 @@ fn eliminate_spike_row<T: Real>(
     tau: usize,
     p: usize,
     ws: &mut Workspace<T>,
-) -> (Vec<(u32, T)>, T, T) {
+) -> (Vec<(u32, T)>, T, T, T) {
     let drop_tol = T::from_f64(opts.drop_tol);
     let w = &mut ws.work;
     let flag = &mut ws.flag;
@@ -604,6 +646,7 @@ fn eliminate_spike_row<T: Real>(
     }
     let mut sigma = f.spike[p];
     let mut zeta = sigma.abs();
+    let mut max_mu = T::ZERO;
 
     // U3. Eliminate row p with the rows of steps τ+1, …, m−1.
     let mut eta: Vec<(u32, T)> = Vec::new();
@@ -629,7 +672,8 @@ fn eliminate_spike_row<T: Real>(
         }
         sigma -= mu * f.spike[p_k];
         zeta += (mu * f.spike[p_k]).abs();
+        max_mu = max_mu.max(mu.abs());
         eta.push((idx32(p_k), mu));
     }
-    (eta, sigma, zeta)
+    (eta, sigma, zeta, max_mu)
 }

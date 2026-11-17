@@ -1357,6 +1357,161 @@ fn for_scalar_scales_three_thresholds_and_nothing_else() {
     assert_eq!(*LuFactor::options(&LuF64::default()), d);
 }
 
+// ---------------------------------------------------------------------------
+// Step U4′ of Chapter 5.5 (task L1.8): the multiplier limit.
+// ---------------------------------------------------------------------------
+
+/// The pilot of the L1.8 contract, in `f64`: 90 exchanges on a random
+/// basis of order 150, every third entering column the column it replaces
+/// times `weak` plus a combination of two other basis columns. Returns the
+/// largest quotient, over the applied updates, of the scaled FTRAN
+/// residual of the updated factor over that of a fresh factorization of
+/// the same basis (floored at 1), and the number of updates refused by
+/// step U4′.
+fn multiplier_pilot(weak: f64, limit: f64) -> (f64, usize) {
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 11
+        }
+        #[allow(clippy::cast_precision_loss)] // 53 random bits
+        fn unit(&mut self) -> f64 {
+            (self.next() as f64) / (1_u64 << 52) as f64 - 1.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            usize::try_from(self.next() % n as u64).unwrap()
+        }
+    }
+    let (n, exchanges) = (150, 90);
+    let mut rng = Lcg(97);
+    let mut base = Vec::new();
+    for j in 0..n {
+        let d = 3.0 + rng.unit();
+        base.push((j, j, if rng.next().is_multiple_of(2) { d } else { -d }));
+        for _ in 0..3 {
+            let i = rng.below(n);
+            if i != j {
+                base.push((i, j, rng.unit()));
+            }
+        }
+    }
+    let mut entries = base.clone();
+    let mut rng = Lcg(0x55);
+    for k in 0..exchanges {
+        let j = n + k;
+        let r = (7 * k + 3) % n;
+        if k % 3 == 2 {
+            let (o1, o2) = ((r + 1) % n, (r + 5) % n);
+            for &(i, c, v) in &base {
+                if c == o1 {
+                    entries.push((i, j, v));
+                }
+                if c == o2 {
+                    entries.push((i, j, -0.5 * v));
+                }
+                if c == r {
+                    entries.push((i, j, v * weak));
+                }
+            }
+        } else {
+            for _ in 0..4 {
+                entries.push((rng.below(n), j, rng.unit()));
+            }
+            entries.push((r, j, 2.0 + rng.unit()));
+        }
+    }
+    let mut t = crate::Triplets::new(n, n + exchanges);
+    for &(i, j, v) in &entries {
+        t.push(u32::try_from(i).unwrap(), u32::try_from(j).unwrap(), v);
+    }
+    let a: CscMatrix = t.to_csc().unwrap();
+    let amax = a.val.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let norm = |v: &[f64]| v.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let quality = |lu: &mut LuF64, heading: &[ColumnRef]| {
+        #[allow(clippy::cast_precision_loss)] // small integers
+        let b: Vec<f64> = (0..n).map(|i| ((i * 37) % 11) as f64 - 5.0).collect();
+        let mut x = SparseVec::from_dense(&b);
+        lu.ftran(&mut x);
+        let xv = x.values();
+        let mut r: Vec<f64> = b.iter().map(|&v| -v).collect();
+        for (k, c) in heading.iter().enumerate() {
+            c.for_each_entry(&a, |i, v| r[i as usize] = v.mul_add(xv[k], r[i as usize]));
+        }
+        norm(&r) / (f64::EPSILON * (amax * norm(xv) + norm(&b)))
+    };
+    let opts = LuOptions {
+        refactor_interval: 1000,
+        fill_factor: 1e9,
+        update_multiplier_limit: limit,
+        ..LuOptions::default()
+    };
+    let unlimited = LuOptions {
+        update_multiplier_limit: f64::INFINITY,
+        ..opts
+    };
+    let mut heading: Vec<ColumnRef> = (0..n).map(|j| ColumnRef::Structural(Col::from_usize(j))).collect();
+    let mut lu = LuF64::new(opts);
+    fz(&mut lu, &heading, &a).unwrap();
+    let (mut worst, mut refused) = (0.0_f64, 0);
+    for k in 0..exchanges {
+        let r = (7 * k + 3) % n;
+        let entering = ColumnRef::Structural(Col::from_usize(n + k));
+        let mut alpha = SparseVec::new(n);
+        entering.for_each_entry(&a, |i, v| alpha.set(i, alpha.get(i) + v));
+        lu.ftran_for_update(&mut alpha);
+        let alpha_r = alpha.get(u32::try_from(r).unwrap());
+        let mut trial = heading.clone();
+        trial[r] = entering;
+        let mut fresh = LuF64::new(opts);
+        let regular = fz(&mut fresh, &trial, &a).is_ok();
+        let before = lu.clone();
+        match lu.update(r, alpha_r) {
+            Ok(UpdateOutcome::Updated) if regular => {
+                heading = trial;
+                assert!(!lt(limit, lu.update_stats().max_multiplier), "(F4)");
+                let q = quality(&mut lu, &heading);
+                let q0 = quality(&mut fresh, &heading);
+                worst = worst.max(q / q0.max(1.0));
+            }
+            out => {
+                if out == Ok(UpdateOutcome::RefactorNeeded(RefactorReason::Unstable)) {
+                    let mut probe = before;
+                    probe.set_options(unlimited);
+                    if probe.update(r, alpha_r) == Ok(UpdateOutcome::Updated) {
+                        refused += 1;
+                    }
+                }
+                if out.is_ok() && regular {
+                    heading = trial;
+                }
+                fz(&mut lu, &heading, &a).unwrap();
+            }
+        }
+    }
+    (worst, refused)
+}
+
+/// Step U4′ (task L1.8): on the sequence with `α_r ≈ 10⁻⁸` of the pilot
+/// the updated factor ends up more than `10⁷` times less accurate than a
+/// fresh one without the limit (`5.5·10⁹` measured), and within `10⁴` of
+/// it with the default limit, which refuses some updates (an infinite
+/// limit refuses none). Invariant (F4) is checked after every applied
+/// update.
+#[test]
+fn multiplier_limit_bounds_the_loss_of_the_update() {
+    assert_eq!(LuOptions::default().update_multiplier_limit, 1e6);
+    let (off, none) = multiplier_pilot(1e-8, f64::INFINITY);
+    let (on, refused) = multiplier_pilot(1e-8, LuOptions::default().update_multiplier_limit);
+    assert!(off > 1e7, "without the limit: {off:e}");
+    assert!(on < 1e4, "with the default limit: {on:e}");
+    assert_eq!(none, 0);
+    assert!(refused > 0);
+}
+
 pub(crate) mod kkt_gen {
     use crate::real::is_exact_zero;
     use crate::{Col, CscMatrix, KktForm, Row};
