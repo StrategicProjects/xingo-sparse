@@ -5,7 +5,7 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-11-17
 
 Scalars other than `f64` (task L1.8 of the Xingó plan, D-0113): the
 defaults follow the scalar, the solves of `SupernodalLdl` can run in the
