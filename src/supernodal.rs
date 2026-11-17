@@ -259,9 +259,22 @@
 //!     has `B_d` block diagonal: for a `2×2` block `E = [e₁₁ e₂₁; e₂₁ e₂₂]`
 //!     at the columns `k, k+1` of `d`, `B[:, k] = e₁₁ l_k + e₂₁ l_{k+1}` and
 //!     `B[:, k+1] = e₂₁ l_k + e₂₂ l_{k+1}`; the rows of `d` are read past
-//!     its own delayed rows (M6). The largest update any descendant makes
-//!     to the diagonal of a column of `s` is kept as that column's
-//!     reference scale for M3.
+//!     its own delayed rows (M6). The largest *term* any descendant adds to
+//!     the diagonal of a column `j` of `s` is kept as that column's
+//!     reference scale for M3: `l_jk (d_k l_jk)` for a `1×1` pivot `k` of
+//!     `d`, `l_jk B[j, k] + l_{j,k+1} B[j, k+1]` for a `2×2` block — the
+//!     same terms on both paths: the kernel path forms them while it
+//!     gathers `B`, beside the `gemm_sub` whose sum is the update. The sum
+//!     itself joins the scale too. The sum alone is not a scale: a pair `{x,
+//!     q}` of a primal column and a dual leaf delayed into its block (two
+//!     `1×1` pivots `−d_x` and `a²/d_x`) removes `x` exactly, its two terms
+//!     `∓c²/d_x` on a dual row coupled to `x` cancel, and their sum is
+//!     rounding noise (measured, 0.4.0: a dual column of the root whose
+//!     diagonal summed four such updates, terms up to `3.2·10⁻²`, arrived as
+//!     `6.8·10⁻¹⁸` with the sum `6.9·10⁻¹⁸` of one update as its scale, and
+//!     was taken as a pivot with the expected inertia — `K` singular, `A`
+//!     of rank 9 of 10; the simplicial path, which kept the terms, reported
+//!     the zero pivot at the same row; L1.9).
 //! M3. [Pivot.] With `A₁₁` the diagonal block of the `w = nc + nd` active
 //!     columns: `P A₁₁ Pᵀ = L₁₁ B₁ L₁₁ᵀ` by `sytrf` on a copy. A `1×1`
 //!     pivot `d` with `|d| ≤ ζ m_j`, or a `2×2` block whose three entries
@@ -281,8 +294,8 @@
 //!     expected inertia and residuals of `10¹⁵`, a silent failure); a pivot
 //!     that is not finite is [`KktError::NotFinite`] there. The reference scale `m_j`
 //!     is the largest term of the sums that produced the pivot — its
-//!     diagonal as the block holds it and the largest update a descendant
-//!     made to it (M2: a dual column coupled only to pairs below it
+//!     diagonal as the block holds it and the largest term of the updates
+//!     the descendants made to it (M2: a dual column coupled only to pairs below it
 //!     receives updates that cancel to rounding noise, and the noise
 //!     must not pass for a pivot); for a column delayed into
 //!     this block, the scale it was flagged with where it came from and
@@ -462,6 +475,13 @@
 //! (L9) A delayed column is received by the parent supernode of the block
 //!      that delayed it and nowhere else; its row of `L` stays in that
 //!      block.
+//! (L10) In the `LBLᵀ` path the reference scale an own column `j` of `s`
+//!      brings to M3 is at least `|t|` for every term `t` of every update
+//!      its diagonal received in M2 (one term per `1×1` pivot or `2×2`
+//!      block of the descendant), and at least the update's sum: the
+//!      kernel path and the simplicial path record the same terms, so the
+//!      verdict of M3 on a column does not depend on the path (the test
+//!      `cancelled_updates_on_the_kernel_path_are_a_zero_pivot`).
 //! (S6), (S10) as in Chapter 5.14, checked in steps N4–N5 and asserted in
 //!      debug builds. [`SymbolicLdl::check_invariants`] checks (L1)–(L4);
 //!      the L1.6a harness checks (L5) with a counting allocator (0
@@ -1814,7 +1834,10 @@ fn pivot_block<T: Real, K: DenseKernel<T>>(
 /// [`update_kernel`], with `B ← L_d[a..b, :] B_d` for the block-diagonal
 /// `B_d` (`dd`, `td`: the pivots and the `2×2` marks of `d` in pivot
 /// order; `e₂₁` read from the block) and the rows of `d` read past its
-/// `off` delayed rows.
+/// `off` delayed rows. `dscale` receives, for each column of `s` the
+/// update reaches, the largest term of the sum on its diagonal and the
+/// sum itself (step M2, invariant (L10)): the terms are formed while `B`
+/// is gathered, as [`update_lblt_scalar`] forms them.
 #[allow(clippy::too_many_arguments)] // the operands of step M2
 fn update_lblt_kernel<T: Real, K: DenseKernel<T>>(
     ld: &DenseBlock<T>,
@@ -1849,14 +1872,22 @@ fn update_lblt_kernel<T: Real, K: DenseKernel<T>>(
             let lk1 = &ld.data[(k + 1) * nrd + base + a..(k + 1) * nrd + base + b];
             let (e11, e21, e22) = (dd[k], ld.data[k + 1 + k * nrd], dd[k + 1]);
             for j in 0..nm {
-                bb.data[k * nm + j] = e11 * lk[j] + e21 * lk1[j];
-                bb.data[(k + 1) * nm + j] = e21 * lk[j] + e22 * lk1[j];
+                let (t0, t1) = (e11 * lk[j] + e21 * lk1[j], e21 * lk[j] + e22 * lk1[j]);
+                bb.data[k * nm + j] = t0;
+                bb.data[(k + 1) * nm + j] = t1;
+                // The term of the pair in the sum of the diagonal (step M2),
+                // as the simplicial path forms it.
+                let cj = pat_d[a + j] as usize - s0;
+                dscale[cj] = dscale[cj].max((lk[j] * t0 + lk1[j] * t1).abs());
             }
             k += 2;
         } else {
             let dk = dd[k];
-            for (x, &l) in bb.data[k * nm..(k + 1) * nm].iter_mut().zip(lk) {
+            for (j, (x, &l)) in bb.data[k * nm..(k + 1) * nm].iter_mut().zip(lk).enumerate() {
                 *x = l * dk;
+                // The term of pivot k in the sum of the diagonal (step M2).
+                let cj = pat_d[a + j] as usize - s0;
+                dscale[cj] = dscale[cj].max((l * *x).abs());
             }
             k += 1;
         }
@@ -1869,6 +1900,8 @@ fn update_lblt_kernel<T: Real, K: DenseKernel<T>>(
     for j in 0..nm {
         let cj = pat_d[a + j] as usize - s0;
         let col = &cb.data[j * nr..(j + 1) * nr];
+        // The sum of the terms above joins the scale as well (it can exceed
+        // the largest term when the terms share a sign).
         dscale[cj] = dscale[cj].max(col[j].abs());
         let dst = &mut ls.data[cj * nrs..(cj + 1) * nrs];
         for i in j..nr {
@@ -2079,8 +2112,9 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
                 }
             }
             // M3–M6; the reference scales the columns bring (step M3): the
-            // largest update a descendant made to the diagonal of an own
-            // column, the carried scale of a delayed one.
+            // largest term of the updates the descendants made to the
+            // diagonal of an own column (M2, (L10)), the carried scale of a
+            // delayed one.
             refs.clear();
             refs.extend_from_slice(&dscale[s0..s1]);
             refs.extend(inb.iter().map(|d| d.scale));
@@ -3672,6 +3706,89 @@ mod tests {
                 s.factorize(&sym, &z, Regularization::none()),
                 Err(KktError::ZeroPivot { .. })
             ));
+        }
+    }
+
+    /// Step M2 on the kernel path: a dual row `r` coupled to two primal
+    /// columns, each of which also carries a singleton dual row (`q` on
+    /// `x`, `s` on `y`). `A = [a 0; c e; 0 f]` has rank 2 < 3, so `K` is
+    /// singular. Eliminating a pair `{x, q}` (the leaf `q` delayed into the
+    /// block of `x`, two `1×1` pivots `−d_x` and `a²/d_x`) removes `x`
+    /// exactly: its two terms on the diagonal of `r`, `∓c²/d_x`, cancel, and
+    /// so do those of `{y, s}`, so the diagonal reaches `r` as rounding
+    /// noise. The kernel path recorded only the sum of each update — the
+    /// noise — as the reference scale of `r`, and with 0.4.0 the root took
+    /// the noise as a pivot with the expected inertia (seed
+    /// 15906914706389704250 of `random_kkt_systems`; L1.9). With the terms
+    /// recorded as the simplicial path records them, every option set
+    /// reports the zero pivot at `r`.
+    #[test]
+    fn cancelled_updates_on_the_kernel_path_are_a_zero_pivot() {
+        let (dx, dy, a, c, e, f) = (0.3, 1.7, 1.9, 0.7, 1.3, 0.9);
+        let k = CscMatrix::from_triplets(
+            5,
+            5,
+            &[
+                (Row(0), Col(0), -dx),
+                (Row(1), Col(1), -dy),
+                (Row(2), Col(0), a),
+                (Row(3), Col(0), c),
+                (Row(3), Col(1), e),
+                (Row(4), Col(1), f),
+            ],
+        )
+        .unwrap();
+        let form = KktForm::Augmented {
+            n_primal: 2,
+            n_dual: 3,
+        };
+        assert!(!full_row_rank(&k, 2));
+        for opts in variants() {
+            let s = Naive::new(NaiveDense, opts);
+            // q, x, s, y, r: the pairs {x, q} and {y, s} update the root r.
+            let sym = s
+                .analyze(&k.pattern(), form, &Fixed(vec![2, 0, 4, 1, 3]))
+                .unwrap();
+            let got = s.factorize(&sym, &k, Regularization::none());
+            assert!(
+                matches!(got, Err(KktError::ZeroPivot { position: 3 })),
+                "{opts:?}: {:?}",
+                got.map(|(_, i)| i)
+            );
+            let sym = s.analyze(&k.pattern(), form, &Amd::default()).unwrap();
+            let got = s.factorize(&sym, &k, Regularization::none());
+            assert!(
+                matches!(
+                    got,
+                    Err(KktError::ZeroPivot { .. } | KktError::WrongInertia { .. })
+                ),
+                "{opts:?}: {:?}",
+                got.map(|(_, i)| i)
+            );
+        }
+    }
+
+    /// The case of `random_kkt_systems` that found the defect of step M2
+    /// (`m = 10, extra = 0, regime = 1, v = 1, seed = 15906914706389704250`;
+    /// L1.9): `A` has rank 9 of 10, and with every supernode on the kernel
+    /// path (`variants()[1]`) the root took a pivot of `6.8·10⁻¹⁸` whose
+    /// scale was the cancelled sum of an update; the simplicial path
+    /// (`variants()[0]`) and the kernel path now report the zero pivot at
+    /// the same row.
+    #[test]
+    fn the_l19_seed_is_a_zero_pivot_on_both_paths() {
+        let (m, n) = (10, 10);
+        let (aug, _, form) = kkt(m, n, 4.0, 15_906_914_706_389_704_250);
+        assert!(!full_row_rank(&aug, n));
+        for opts in [variants()[0], variants()[1]] {
+            let s = Naive::new(NaiveDense, opts);
+            let sym = s.analyze(&aug.pattern(), form, &Amd::default()).unwrap();
+            let got = s.factorize(&sym, &aug, Regularization::none());
+            assert!(
+                matches!(got, Err(KktError::ZeroPivot { position: 19 })),
+                "{opts:?}: {:?}",
+                got.map(|(_, i)| i)
+            );
         }
     }
 

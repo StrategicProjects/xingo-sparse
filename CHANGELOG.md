@@ -78,17 +78,39 @@ unchanged; see "Breaking" for what is not.
 * For a scalar other than `f64`, `Lu::default()`, `Regularization::default()`
   and `Refinement::default()` return other values than in 0.3.x.
 
+### Fixed
+
+* `SupernodalLdl` with `Regularization::none()` (the `LBLᵀ` path, Algorithm
+  M of Chapter 5.17): on the kernel path of step M2 (supernodes of at least
+  `SupernodalOptions::min_supernode_cols` columns) the reference scale of
+  a diagonal was the *sum* of each descendant's update, not its largest
+  term as on the simplicial path. A pair of a primal column and a dual
+  leaf delayed into its block cancels exactly on every other dual row
+  coupled to the primal, the sum is then rounding noise, and a singular
+  matrix (rank-deficient `A`) was factorized with the expected inertia
+  instead of returning `KktError::ZeroPivot`. The kernel path now records
+  the same terms as the simplicial path (invariant (L10)); the factor of
+  every matrix the old scale did not misjudge is unchanged bit for bit.
+  Present since 0.3.0; found by the crate's property test (`m = 10`,
+  `n = 10`, seed `15906914706389704250`, every supernode on the kernel
+  path), kept as a deterministic test with a `5 × 5` test of the structure.
+
 ### Known limitations
 
-* `SupernodalLdl` with `Regularization::none()` (the `LBLᵀ` path) can
-  factorize a singular quasi-definite matrix without an error: when the
-  constraint block `A` is rank deficient, the zero pivot may come out as
-  rounding noise above `SupernodalOptions::zero_pivot_tol` and with the
-  sign the inertia expects, so neither `KktError::ZeroPivot` nor
-  `KktError::WrongInertia` is returned. Present since 0.3.0; found by the
-  crate's own property test (`m = 10`, `n = 10`, seed
-  `15906914706389704250`), which can therefore fail on a random seed. The
-  default regularization is not affected.
+* The `LBLᵀ` path can still factorize a singular matrix without an error
+  when the zero pivot comes out as rounding noise above
+  `SupernodalOptions::zero_pivot_tol` times its reference scale and with
+  the sign the inertia expects. Two mechanisms remain, both on both paths:
+  a `2×2` block taken with a diagonal that is itself rounding noise
+  carries that noise into the rows it updates, with terms of the size of
+  the noise; and noise accumulated through several pivots can exceed
+  `10⁻¹⁴` times the largest term (measured up to `2·10⁻¹¹`; the rounding
+  of entries off the diagonal, amplified by large entries of `L`, has no
+  reference scale). The same seed with relaxed supernodes is one of them
+  (`1.5·10⁻¹⁴`). Measured on 20 000 random cases of the property test: 11
+  of 557 singular systems (0.4.0 before this fix: 15). The property test
+  can therefore still fail on a random seed. The default regularization is
+  not affected.
 
 ## [0.3.2] — 2026-11-14
 
