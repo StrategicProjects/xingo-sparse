@@ -404,6 +404,24 @@
 //! simplicial solve. Finally `x_{fwd[k]} ← y_k`. Nothing is allocated
 //! while the work vector is free (invariant (L5)); the factor is read only.
 //!
+//! S0′. \[Kernel path; task L1.8.\] For a supernode `s` with `n_c(s) ≥ 2`
+//!     and `n_r(s) ≥ kernel.solve_min_rows()` ([`DenseKernel::solve_min_rows`]):
+//!     gather `g ← (y_{s₀..s₁}, y[R_s])` into the tail of the factor's work
+//!     vector (allocated by the factorization: `N + max_s n_r(s)` scalars),
+//!     run [`DenseKernel::solve_unit_lower`] (S1) or
+//!     [`DenseKernel::solve_unit_lower_t`] (S3) on `g`, and scatter back —
+//!     forward: all of `g`; backward: its first `n_c` entries. Otherwise
+//!     the loops of S1/S3. The gather and the scatter are copies (exact),
+//!     and the provided methods do, entry by entry, the operations of the
+//!     loops in the same order (Algorithms V and W of Chapter 5.16), so the
+//!     solution does not depend on the path (invariant (D4)). A supernode
+//!     of one column keeps the plain loops whatever the kernel: its
+//!     backward step sums the column in one accumulator, not by step D of
+//!     Algorithm W, and sending it through the hook would change the bits
+//!     of the second edition. The work vector holds no state between two
+//!     solves: every entry of `g` is written by the gather before it is
+//!     read, so nothing accumulates there.
+//!
 //! ## Algorithm S′ (Solve with the `LBLᵀ` factor)
 //! Algorithm S with: `y ← P′ x` by `fwd′`; the blocks walked by their
 //! pivot ranges and their remapped rows (delayed rows, then `R_s`); in S1
@@ -411,6 +429,11 @@
 //! `e₂₁`, not an entry of `L`); S2 runs block by block right after S1 (the
 //! pivots of a block are final once its forward step is done), and a
 //! `2×2` block solves `E [y_k; y_{k+1}] = [b_k; b_{k+1}]` by Cramer's rule.
+//! Every block takes the general loops (no one-column special case), so
+//! S0′ applies to any block with `n_c ≥ 1`, with the marks `skip` of the
+//! first columns of its pairs; S2 of the block runs after its forward hook
+//! (the division of `y_j` reads nothing the later columns write and writes
+//! nothing they read: the same bits as the interleaved loop).
 //! Nothing is allocated (L5); the pivot pairs never cross a block (L8).
 //!
 //! ## Invariants
@@ -425,7 +448,8 @@
 //! (L4) Every `(d, a, b)` of A7 has `d < s`, `R_d[a..b) ⊆ [s₀, s₁)` and
 //!      `R_d[b..] ⊆ R_s`.
 //! (L5) [`KktSolver::solve`] allocates nothing (its work vector belongs to
-//!      the factor) and reads the factor only.
+//!      the factor) and reads the factor only — on the kernel path of S0′
+//!      too (the gather area is part of the work vector).
 //! (L6) The factorization is a deterministic function of its inputs:
 //!      no threads, no hashing, the same operations in the same order —
 //!      two factorizations of the same matrix are equal bit for bit.
@@ -487,6 +511,7 @@
 use core::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
+use crate::dense::dot4 as dot;
 use crate::factor::count_f64;
 use crate::kkt::{
     assemble_regularized, check_inertia, check_regularization, count_inertia, lower_with_diagonal,
@@ -806,8 +831,8 @@ pub struct NumericLdl<T: Real = f64> {
     /// `s` of step K2′ (powers of two), original numbering.
     scale: Vec<T>,
     shared: Arc<Structure>,
-    /// The work vector of Algorithm S (`N` scalars), allocated by the
-    /// factorization.
+    /// The work vector of Algorithm S (`N + max_s n_r(s)` scalars: `y`,
+    /// then the gather area of step S0′), allocated by the factorization.
     scratch: SolveScratch<T>,
     /// `Some` for an `LBLᵀ` factor (Algorithm M).
     lblt: Option<Lblt>,
@@ -818,6 +843,21 @@ pub struct NumericLdl<T: Real = f64> {
 /// thread solving with the same factor at the same moment gets a
 /// temporary vector instead of waiting).
 struct SolveScratch<T>(Mutex<Vec<T>>);
+
+impl<T: Real> SolveScratch<T> {
+    /// `N + max_s n_r(s)` zeros.
+    fn new(n: usize, blocks: &[DenseBlock<T>]) -> Self {
+        let rows = blocks.iter().map(|b| b.rows).max().unwrap_or(0);
+        Self(Mutex::new(vec![T::ZERO; n + rows]))
+    }
+}
+
+impl<T: Real> NumericLdl<T> {
+    /// The length of the work vector of Algorithm S.
+    fn work_len(&self) -> usize {
+        self.shared.n + self.blocks.iter().map(|b| b.rows).max().unwrap_or(0)
+    }
+}
 
 impl<T: Clone> Clone for SolveScratch<T> {
     fn clone(&self) -> Self {
@@ -1273,27 +1313,6 @@ fn update_scalar<T: Real>(
             }
         }
     }
-}
-
-/// `Σ a_i b_i` with four independent partial sums (the dependent chain of a
-/// single accumulator bounds the backward sweep of Algorithm S by the
-/// latency of the fused multiply-add, not by memory); the order of the
-/// additions is fixed, so the result is deterministic.
-#[inline]
-fn dot<T: Real>(a: &[T], b: &[T]) -> T {
-    let mut acc = [T::ZERO; 4];
-    let (ca, ra) = a.as_chunks::<4>();
-    let (cb, rb) = b.as_chunks::<4>();
-    for (pa, pb) in ca.iter().zip(cb) {
-        for k in 0..4 {
-            acc[k] += pa[k] * pb[k];
-        }
-    }
-    let mut tail = T::ZERO;
-    for (&p, &q) in ra.iter().zip(rb) {
-        tail += p * q;
-    }
-    (acc[0] + acc[1]) + (acc[2] + acc[3]) + tail
 }
 
 /// `Σ_q l_q x_{idx[q] − base}`, as [`dot`] with a gathered second operand.
@@ -2208,6 +2227,7 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
             row_ptr[s + 1] = row_idx.len();
         }
         let perm = Perm::from_fwd(fwd_new).map_err(KktError::Structure)?;
+        let scratch = SolveScratch::new(n, &blocks);
         Ok((
             NumericLdl {
                 blocks,
@@ -2217,7 +2237,7 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
                 bumped: 0,
                 scale,
                 shared: Arc::clone(st),
-                scratch: SolveScratch(Mutex::new(vec![T::ZERO; n])),
+                scratch,
                 lblt: Some(Lblt {
                     perm,
                     starts,
@@ -2231,18 +2251,23 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
         ))
     }
 
-    /// Algorithm S′: the solve with an `LBLᵀ` factor.
-    fn solve_lblt(numeric: &NumericLdl<T>, lb: &Lblt, x: &mut [T]) {
+    /// Algorithm S′: the solve with an `LBLᵀ` factor (step S0′ on the
+    /// blocks with at least `kernel.solve_min_rows()` rows).
+    #[allow(clippy::too_many_lines)] // S1–S3 with the kernel path, as in the chapter
+    fn solve_lblt(&self, numeric: &NumericLdl<T>, lb: &Lblt, x: &mut [T]) {
         let n = numeric.shared.n;
+        let need = numeric.work_len();
         let mut held = numeric.scratch.0.try_lock().ok();
         let mut temp = Vec::new();
-        let y: &mut [T] = match held.as_deref_mut() {
-            Some(v) if v.len() == n => v.as_mut_slice(),
+        let work: &mut [T] = match held.as_deref_mut() {
+            Some(v) if v.len() == need => v.as_mut_slice(),
             _ => {
-                temp.resize(n, T::ZERO);
+                temp.resize(need, T::ZERO);
                 temp.as_mut_slice()
             }
         };
+        let (y, gather) = work.split_at_mut(n);
+        let min_rows = self.kernel.solve_min_rows();
         let fwd = &lb.perm.fwd;
         for (yk, &i) in y.iter_mut().zip(fwd) {
             *yk = x[i as usize];
@@ -2255,6 +2280,31 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
             let blk = &numeric.blocks[s];
             let nr = blk.rows;
             let rows = &lb.row_idx[lb.row_ptr[s]..lb.row_ptr[s + 1]];
+            if nc >= 1 && nr >= min_rows {
+                // S0′, forward, then S2 of the block.
+                let g = &mut gather[..nr];
+                g[..nc].copy_from_slice(&y[s0..s1]);
+                for (gq, &r) in g[nc..].iter_mut().zip(rows) {
+                    *gq = y[r as usize];
+                }
+                self.kernel
+                    .solve_unit_lower(blk, &lb.first[s0..s1], g);
+                y[s0..s1].copy_from_slice(&g[..nc]);
+                for (&gq, &r) in g[nc..].iter().zip(rows) {
+                    y[r as usize] = gq;
+                }
+                let mut j = 0;
+                while j < nc {
+                    if lb.first[s0 + j] {
+                        Self::solve_pair(numeric, blk, s0, j, y);
+                        j += 2;
+                    } else {
+                        y[s0 + j] = y[s0 + j] / numeric.diag[s0 + j];
+                        j += 1;
+                    }
+                }
+                continue;
+            }
             let (ys, rest) = y.split_at_mut(s1);
             let mut j = 0;
             while j < nc {
@@ -2282,16 +2332,7 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
                     for (&r, &l) in rows.iter().zip(&col[nc..]) {
                         rest[r as usize - s1] -= l * xj;
                     }
-                    // S2 for the 2×2 block, by Cramer's rule.
-                    let (e11, e21, e22) = (
-                        numeric.diag[s0 + j],
-                        blk.data[j + 1 + j * nr],
-                        numeric.diag[s0 + j + 1],
-                    );
-                    let det = e11 * e22 - e21 * e21;
-                    let (b0, b1) = (ys[s0 + j], ys[s0 + j + 1]);
-                    ys[s0 + j] = (e22 * b0 - e21 * b1) / det;
-                    ys[s0 + j + 1] = (e11 * b1 - e21 * b0) / det;
+                    Self::solve_pair(numeric, blk, s0, j, ys);
                     j += 2;
                 } else {
                     ys[s0 + j] = ys[s0 + j] / numeric.diag[s0 + j];
@@ -2306,6 +2347,18 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
             let blk = &numeric.blocks[s];
             let nr = blk.rows;
             let rows = &lb.row_idx[lb.row_ptr[s]..lb.row_ptr[s + 1]];
+            if nc >= 1 && nr >= min_rows {
+                // S0′, backward.
+                let g = &mut gather[..nr];
+                g[..nc].copy_from_slice(&y[s0..s1]);
+                for (gq, &r) in g[nc..].iter_mut().zip(rows) {
+                    *gq = y[r as usize];
+                }
+                self.kernel
+                    .solve_unit_lower_t(blk, &lb.first[s0..s1], g);
+                y[s0..s1].copy_from_slice(&g[..nc]);
+                continue;
+            }
             let (ys, rest) = y.split_at_mut(s1);
             let mut j = nc;
             while j > 0 {
@@ -2327,6 +2380,22 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
         for (&yk, &i) in y.iter().zip(fwd) {
             x[i as usize] = yk;
         }
+    }
+
+    /// Step S2 for the `2×2` block at pivots `s0 + j`, `s0 + j + 1` of
+    /// `blk`, by Cramer's rule, on `y` (indexed by pivots).
+    #[inline]
+    fn solve_pair(numeric: &NumericLdl<T>, blk: &DenseBlock<T>, s0: usize, j: usize, y: &mut [T]) {
+        let nr = blk.rows;
+        let (e11, e21, e22) = (
+            numeric.diag[s0 + j],
+            blk.data[j + 1 + j * nr],
+            numeric.diag[s0 + j + 1],
+        );
+        let det = e11 * e22 - e21 * e21;
+        let (b0, b1) = (y[s0 + j], y[s0 + j + 1]);
+        y[s0 + j] = (e22 * b0 - e21 * b1) / det;
+        y[s0 + j + 1] = (e11 * b1 - e21 * b0) / det;
     }
 }
 
@@ -2721,6 +2790,7 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
         let found = count_inertia(diag.iter().copied(), core::iter::empty::<(T, T, T)>());
         let inertia = check_inertia(found, symbolic.form.expected_inertia(n))?;
         debug_assert_eq!(inertia, symbolic.form.expected_inertia(n), "(S6)");
+        let scratch = SolveScratch::new(n, &blocks);
         Ok((
             NumericLdl {
                 blocks,
@@ -2730,31 +2800,35 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
                 bumped,
                 scale,
                 shared: Arc::clone(st),
-                scratch: SolveScratch(Mutex::new(vec![T::ZERO; n])),
+                scratch,
                 lblt: None,
             },
             inertia,
         ))
     }
 
+    #[allow(clippy::too_many_lines)] // S1–S3 with the kernel path, as in the chapter
     fn solve(&self, numeric: &NumericLdl<T>, x: &mut [T]) {
         let st = &numeric.shared;
         let n = st.n;
         assert_eq!(x.len(), n, "solve: x has the wrong length");
         if let Some(lb) = &numeric.lblt {
-            return Self::solve_lblt(numeric, lb, x);
+            return self.solve_lblt(numeric, lb, x);
         }
         // The factor's own work vector; a temporary one only if another
         // thread holds it (or a panic poisoned it).
+        let need = numeric.work_len();
         let mut held = numeric.scratch.0.try_lock().ok();
         let mut temp = Vec::new();
-        let y: &mut [T] = match held.as_deref_mut() {
-            Some(v) if v.len() == n => v.as_mut_slice(),
+        let work: &mut [T] = match held.as_deref_mut() {
+            Some(v) if v.len() == need => v.as_mut_slice(),
             _ => {
-                temp.resize(n, T::ZERO);
+                temp.resize(need, T::ZERO);
                 temp.as_mut_slice()
             }
         };
+        let (y, gather) = work.split_at_mut(n);
+        let min_rows = self.kernel.solve_min_rows();
         let fwd = &st.perm.fwd;
         for (yk, &i) in y.iter_mut().zip(fwd) {
             *yk = x[i as usize];
@@ -2770,6 +2844,20 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
                 let xj = y[s0];
                 for (&r, &l) in pat.iter().zip(&blk.data[1..]) {
                     y[r as usize] -= l * xj;
+                }
+                continue;
+            }
+            if nr >= min_rows {
+                // S0′, forward.
+                let g = &mut gather[..nr];
+                g[..nc].copy_from_slice(&y[s0..s1]);
+                for (gq, &r) in g[nc..].iter_mut().zip(pat) {
+                    *gq = y[r as usize];
+                }
+                self.kernel.solve_unit_lower(blk, &[], g);
+                y[s0..s1].copy_from_slice(&g[..nc]);
+                for (&gq, &r) in g[nc..].iter().zip(pat) {
+                    y[r as usize] = gq;
                 }
                 continue;
             }
@@ -2802,6 +2890,17 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
                     acc += l * y[r as usize];
                 }
                 y[s0] -= acc;
+                continue;
+            }
+            if nr >= min_rows {
+                // S0′, backward.
+                let g = &mut gather[..nr];
+                g[..nc].copy_from_slice(&y[s0..s1]);
+                for (gq, &r) in g[nc..].iter_mut().zip(pat) {
+                    *gq = y[r as usize];
+                }
+                self.kernel.solve_unit_lower_t(blk, &[], g);
+                y[s0..s1].copy_from_slice(&g[..nc]);
                 continue;
             }
             for j in (0..nc).rev() {
@@ -3621,6 +3720,103 @@ mod tests {
     /// `FaerLdl` without regularization (its intranodal `LBLᵀ`, supernodal
     /// structure) and `SupernodalLdl<f64, FaerDense>` on the same systems:
     /// the same inertia and solutions equal to rounding.
+    /// `NaiveDense` with every block of at least one row sent through the
+    /// provided solve methods of the trait (step S0′), which it does not
+    /// override.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct HookKernel;
+
+    impl DenseKernel<f64> for HookKernel {
+        fn potrf(&self, a: &mut DenseBlock<f64>) -> Result<(), crate::DenseError> {
+            NaiveDense.potrf(a)
+        }
+        fn sytrf(
+            &self,
+            a: &mut DenseBlock<f64>,
+            perm: &mut Perm,
+            pivot_2x2: &mut Vec<bool>,
+        ) -> Result<Inertia, crate::DenseError> {
+            NaiveDense.sytrf(a, perm, pivot_2x2)
+        }
+        fn trsm_lower(&self, l: &DenseBlock<f64>, b: &mut DenseBlock<f64>, transpose: bool) {
+            NaiveDense.trsm_lower(l, b, transpose);
+        }
+        fn gemm_sub(&self, a: &DenseBlock<f64>, b: &DenseBlock<f64>, c: &mut DenseBlock<f64>) {
+            NaiveDense.gemm_sub(a, b, c);
+        }
+        fn syrk_sub(&self, a: &DenseBlock<f64>, c: &mut DenseBlock<f64>) {
+            NaiveDense.syrk_sub(a, c);
+        }
+        fn name(&self) -> &'static str {
+            "hook"
+        }
+        fn solve_min_rows(&self) -> usize {
+            1
+        }
+    }
+
+    /// Invariant (D4) through step S0′: the provided `solve_unit_lower`,
+    /// `solve_unit_lower_t` return the solve of the second edition's loops
+    /// bit for bit, in `LDLᵀ` (regularized augmented and normal systems)
+    /// and in `LBLᵀ` (unregularized augmented ones), with `2×2` pivots,
+    /// one of them closing its block; the same factor solved by both
+    /// kernels.
+    #[test]
+    fn kernel_solve_path_returns_the_bits_of_the_loops() {
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let (mut hooked_ldl, mut pairs, mut pair_at_edge) = (0_usize, 0_usize, false);
+        for (seed, spread, m, n) in [
+            (1, 0.0, 6, 14),
+            (2, 4.0, 12, 30),
+            (3, 3.0, 20, 45),
+            (4, 2.0, 9, 9),
+            (5, 1.0, 25, 60),
+        ] {
+            let (aug, normal, form) = kkt(m, n, spread, seed);
+            for opts in variants() {
+                let plain = Naive::new(NaiveDense, opts);
+                let hook = SupernodalLdl::<f64, HookKernel>::new(HookKernel, opts);
+                let cases = [
+                    (&aug, form, Regularization::default()),
+                    (&normal, KktForm::NormalEquations, Regularization::default()),
+                    (&aug, form, Regularization::none()),
+                ];
+                for (k, f, reg) in cases {
+                    let nn = k.n_rows;
+                    let sym = plain.analyze(&k.pattern(), f, &Amd::default()).unwrap();
+                    let Ok((num, _)) = plain.factorize(&sym, k, reg) else {
+                        continue; // a singular unregularized system
+                    };
+                    let b = rhs(nn, seed ^ 0x77);
+                    let (mut x1, mut x2) = (b.clone(), b.clone());
+                    plain.solve(&num, &mut x1);
+                    hook.solve(&num, &mut x2);
+                    assert_eq!(bits(&x1), bits(&x2), "seed {seed} {opts:?} {f:?} {reg:?}");
+                    // Solved twice with the same work vector: the same bits.
+                    let mut x3 = b.clone();
+                    hook.solve(&num, &mut x3);
+                    assert_eq!(bits(&x2), bits(&x3));
+                    let starts = num.supernodes();
+                    if num.is_pivoted() {
+                        // (L8): pairs lie inside a block, so a block whose
+                        // last column is in a pair ends with one.
+                        pairs += num.pivot_2x2.iter().filter(|&&t| t).count() / 2;
+                        pair_at_edge |= (0..num.n_supernodes()).any(|s| {
+                            let s1 = starts[s + 1] as usize;
+                            s1 > starts[s] as usize && num.pivot_2x2[s1 - 1]
+                        });
+                    } else {
+                        hooked_ldl += (0..num.n_supernodes())
+                            .filter(|&s| starts[s + 1] - starts[s] >= 2)
+                            .count();
+                    }
+                }
+            }
+        }
+        assert!(hooked_ldl > 0, "no LDLᵀ supernode took the kernel path");
+        assert!(pairs > 0 && pair_at_edge, "pairs {pairs}, at an edge {pair_at_edge}");
+    }
+
     #[cfg(feature = "faer")]
     #[test]
     fn lblt_agrees_with_faer() {

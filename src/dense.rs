@@ -90,6 +90,39 @@
 //! deterministic; its rounding differs from the first edition's (the sum
 //! is accumulated into `c_ij` instead of formed apart and subtracted once).
 //!
+//! ## Algorithms V, W (`solve_unit_lower`, `solve_unit_lower_t`; task L1.8)
+//! The two halves of a supernode's part in Algorithm S of Chapter 5.17,
+//! on the stored block `L` (`n_r × n_c`, `n_r ≥ n_c`, unit lower
+//! trapezoidal: the diagonal slots hold `Δ̂` and are never read) and a
+//! contiguous vector `y` of `n_r` entries — the `n_c` unknowns of the
+//! supernode followed by the gathered entries of its pattern rows.
+//! `skip[j]` (empty: all false) marks the first column of a `2×2` pivot,
+//! whose slot `(j + 1, j)` holds `e₂₁` and is not an entry of `L`.
+//!
+//! V1. For `j = 0, …, n_c − 1`, with `o = j + 1 + [skip_j]`:
+//!     `y_i ← y_i − l_ij · y_j` for `i = o, …, n_r − 1`, in this order.
+//!
+//! W1. For `j = n_c − 1, …, 0`, with `o` as in V1: `a ← D(l_{o..n_c, j},
+//!     y_{o..n_c})`, `b ← D(l_{n_c.., j}, y_{n_c..})`, `y_j ← y_j − (a + b)`.
+//! D.  `D(u, v)` over `n` entries: four accumulators `a_k`, `k = i mod 4`
+//!     over the first `4⌊n/4⌋` entries, `a_k ← a_k + u_i · v_i`; a fifth,
+//!     `t`, over the rest; result `((a₀ + a₁) + (a₂ + a₃)) + t`.
+//!
+//! Every product has the entry of `L` first. These are the operations of
+//! the second edition's solve entry by entry (each `y_i` of V1 receives
+//! its updates in increasing `j`, whether the rows are those of the
+//! diagonal block or the gathered ones), so:
+//!
+//! (D4) The provided methods return the bits of the solve of 0.3.x. An
+//!      implementation *should* return the bits of the provided methods;
+//!      one that does not must say so in its documentation (as `FaerDense`
+//!      does for the factorization kernels). `NaiveDense` and `FaerDense`
+//!      do not override them in 0.4.0. Tested with a kernel that sends
+//!      every supernode through the provided methods (Chapter 5.17).
+//! (D5) [`DenseKernel::solve_min_rows`] is a cost switch, never a
+//!      numerical one: by (D4) the solution does not depend on it for a
+//!      conforming kernel.
+//!
 //! ## Invariants
 //! (D1) After `potrf`, `L Lᵀ = A` (lower triangle) to working precision.
 //! (D2) After `sytrf`, `P A Pᵀ = L B Lᵀ` to working precision, `B` has
@@ -197,6 +230,94 @@ pub trait DenseKernel<T: Real> {
 
     /// A short name for logs and tables.
     fn name(&self) -> &'static str;
+
+    /// The smallest row count `n_r` of a supernode block for which the
+    /// solves of `SupernodalLdl` go through this kernel (gather, hook,
+    /// scatter; step S0′ of Chapter 5.17). `usize::MAX` — the default —
+    /// keeps the loops of the second edition everywhere. A cost switch
+    /// only (invariant (D5)).
+    fn solve_min_rows(&self) -> usize {
+        usize::MAX
+    }
+
+    /// Forward half of a supernode's solve, `y ← L⁻¹ y` (Algorithm V).
+    /// `l` is the stored block (`rows ≥ cols`, unit lower trapezoidal,
+    /// diagonal slots ignored); `skip` is empty or has `l.cols` marks (the
+    /// first column of each `2×2` pivot).
+    ///
+    /// # Panics
+    /// If `y.len() != l.rows`, `l.rows < l.cols`, `l` is inconsistent, or
+    /// `skip` has another length.
+    fn solve_unit_lower(&self, l: &DenseBlock<T>, skip: &[bool], y: &mut [T]) {
+        check_solve(l, skip, y);
+        let (nr, nc) = (l.rows, l.cols);
+        for j in 0..nc {
+            let o = solve_offset(skip, j);
+            let xj = y[j];
+            let col = &l.data[j * nr..(j + 1) * nr];
+            for (yi, &lij) in y[o..].iter_mut().zip(&col[o..]) {
+                *yi -= lij * xj;
+            }
+        }
+    }
+
+    /// Backward half, `y_{..cols} ← L₁₁⁻ᵀ (y_{..cols} − L₂₁ᵀ y_{cols..})`
+    /// (Algorithm W); `y[cols..]` is read only.
+    ///
+    /// # Panics
+    /// As [`DenseKernel::solve_unit_lower`].
+    fn solve_unit_lower_t(&self, l: &DenseBlock<T>, skip: &[bool], y: &mut [T]) {
+        check_solve(l, skip, y);
+        let (nr, nc) = (l.rows, l.cols);
+        for j in (0..nc).rev() {
+            let o = solve_offset(skip, j);
+            let col = &l.data[j * nr..(j + 1) * nr];
+            let a = dot4(&col[o..nc], &y[o..nc]);
+            let b = dot4(&col[nc..], &y[nc..]);
+            y[j] -= a + b;
+        }
+    }
+}
+
+/// The argument checks of Algorithms V and W.
+fn check_solve<T: Real>(l: &DenseBlock<T>, skip: &[bool], y: &[T]) {
+    assert!(
+        l.is_consistent()
+            && l.rows >= l.cols
+            && y.len() == l.rows
+            && (skip.is_empty() || skip.len() == l.cols),
+        "solve_unit_lower: dimensions do not agree"
+    );
+}
+
+/// `o = j + 1 + [skip_j]` of Algorithms V and W.
+#[inline]
+fn solve_offset(skip: &[bool], j: usize) -> usize {
+    j + 1 + usize::from(skip.get(j).copied().unwrap_or(false))
+}
+
+/// Step D of Algorithm W: `Σ u_i v_i` with four independent partial sums
+/// over the chunks of four and a fifth over the tail, combined as
+/// `((a₀ + a₁) + (a₂ + a₃)) + t` (the dependent chain of a single
+/// accumulator bounds the backward sweep by the latency of the
+/// multiply-add, not by memory: 2× on maros-r7's normal equations, L1.6a).
+/// The order of the additions is fixed, so the result is deterministic;
+/// the backward sweep of Algorithm S of Chapter 5.17 uses it too.
+#[inline]
+pub(crate) fn dot4<T: Real>(u: &[T], v: &[T]) -> T {
+    let mut acc = [T::ZERO; 4];
+    let (cu, ru) = u.as_chunks::<4>();
+    let (cv, rv) = v.as_chunks::<4>();
+    for (pu, pv) in cu.iter().zip(cv) {
+        for k in 0..4 {
+            acc[k] += pu[k] * pv[k];
+        }
+    }
+    let mut tail = T::ZERO;
+    for (&p, &q) in ru.iter().zip(rv) {
+        tail += p * q;
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3]) + tail
 }
 
 /// Reference kernels: straightforward loops, always available, the oracle
