@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 89eed9a558c315edc0f072677444c26281dc7bb160669eb17d4deaf2370b4a21 # shrinks to m = 6, extra = 0, regime = 0, v = 2, seed = 14415100759127142886
+cc b6aceb67be3aa6977090a9bee5e59783402f0c15be36230feecaa807ceee2ce1 # shrinks to m = 10, extra = 0, regime = 1, v = 1, seed = 15906914706389704250

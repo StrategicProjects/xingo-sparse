@@ -312,6 +312,31 @@
 //!     the one case that needed the propagation — a pivot of `5·10⁻¹⁹`
 //!     beside terms of `10⁻¹⁸`, the residue of a `2×2` block with one
 //!     noise diagonal — is caught by the growth test of M4 instead.
+//!     *What the scale cannot do (task L1.10).* A backward-stable `LBLᵀ`
+//!     is the exact factor of `K + E` with `|E| ≤ p(n) u |L||B||Lᵀ|`, and
+//!     `E` lives on the pattern of the factor, not of `K`: a singular `K`
+//!     (even a structurally singular one) has nonsingular neighbours within
+//!     the backward error, and a factor of one of them is a legitimate
+//!     output. Measured: a singular system of the random tests whose
+//!     computed factor is, to four digits, the exact factor of `K̃ + δ e
+//!     eᵀ` with `δ = 0.95 u` times the terms of a dual diagonal entry `e`.
+//!     The first-order error of a pivot is `w E wᵀ` with `w` its row of
+//!     `L⁻¹`; the terms above are the case `w = e_i`. Four ways to bring
+//!     `w` (or the uncertainty of a noise diagonal of a `2×2` block) into
+//!     the scale were measured on 20 000 random cases and on the 558 Netlib
+//!     systems and rejected, because each made nonsingular Netlib systems
+//!     (`A` of full rank, `D > 0`) fail with `ZeroPivot`: the bound
+//!     `|W| |L₁₁||B₁||L₁₁ᵀ| |W|ᵀ` within the block, `W = L₁₁⁻¹`, with the
+//!     next rule (11 → 2 silent singular systems of 557; 27 of 1953
+//!     factorizations refused, all of nonsingular systems); the scale `m_k`
+//!     of a noise diagonal handed as `l² m_k` to the terms it generates
+//!     (11 → 6; 11 of 1116 refused — there, Bunch–Kaufman's `L₁₁` had an
+//!     entry of `7.8·10¹⁵` beside the noise diagonal, and the pivot it fed
+//!     was indeed noise, of a nonsingular matrix); both with rook pivoting
+//!     in `sytrf` (17 of 1112 refused); the threshold `u = 10⁻⁴` of M4 with
+//!     the second (11 → 5; 4 of 1116 refused). The structure decides exactly what the scale cannot: a
+//!     structurally singular `K` is singular for every value of its entries
+//!     (all 557 singular systems of the random tests are).
 //! M4. [Rows.] The rows below the diagonal block — the `nz` columns
 //!     removed in M3, as rows, then `R_s` — are gathered in the order of
 //!     `P` and solved: `U ← A₂₁ L₁₁⁻ᵀ` by `trsm_lower` against the unit
@@ -352,6 +377,23 @@
 //!     `w'` positions of the *pivot order*: `fwd′`, `diag` and `pivot_2x2`
 //!     (`true` on both columns of a `2×2` block) are indexed by it, and
 //!     `pos[j]` records where the analyzed column `j` was eliminated.
+//! M7. [Structure; task L1.10.] When M1–M6 and N6 below found no error: a
+//!     maximum matching of the bipartite graph of the nonzero entries of
+//!     `K` (both triangles; depth-first augmenting paths with lookahead
+//!     after a cheap assignment, MC21 — Duff 1981). If it is not perfect, `K` is
+//!     *structurally* singular — its determinant is the zero polynomial in
+//!     the entries, so `K` is singular whatever their values — and the
+//!     factorization returns [`KktError::ZeroPivot`] at the original row of
+//!     the first unmatched column instead of the factor. For `K = [−D Aᵀ;
+//!     A 0]` with `D > 0` this is exactly "`A` has structural rank below its
+//!     row count". Why: the numerical test of M3 cannot decide singularity
+//!     (*What the scale cannot do*, M3), the structure decides it exactly
+//!     for this class — every singular system of the random tests is
+//!     structurally singular (557 of 557 in 20 000 cases), and so is a raw
+//!     Netlib `A` with more rows than columns. Why last: an error M3 or N6
+//!     already reports keeps its kind and its row, and a factor that passes
+//!     is the factor of 0.4.0, bit for bit. `O(N · nnz)` in the worst case,
+//!     about linear in practice.
 //! Then steps N4–N6 as before (`e₂₁` is an entry of `Δ`: `ê₂₁ = e₂₁ /
 //! (s_k s_{k+1})`; the inertia counts `+1 −1` for a `2×2` block with
 //! `det E < 0`, step K4), and the rows of every block are remapped by
@@ -1961,6 +2003,114 @@ fn update_lblt_scalar<T: Real>(
     }
 }
 
+/// Step M7 (task L1.10): a column of `K` left unmatched by a
+/// maximum matching of the bipartite graph of its nonzero entries (both
+/// triangles), or `None` when the matching is perfect. An unmatched column
+/// means `K` is structurally singular: its determinant is the zero
+/// polynomial in the entries, so `K` is singular whatever their values.
+/// Depth-first augmenting paths with lookahead after a cheap assignment
+/// (Duff 1981, MC21), iterative; `O(N · nnz)` in the worst case.
+fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
+    let n = k.n_rows;
+    let none = usize::MAX;
+    // The adjacency of the symmetric pattern (nonzero entries only).
+    let mut ptr = vec![0_usize; n + 1];
+    for j in 0..n {
+        for p in k.col_ptr[j]..k.col_ptr[j + 1] {
+            if is_exact_zero(k.val[p]) {
+                continue;
+            }
+            let i = k.row_idx[p] as usize;
+            ptr[j + 1] += 1;
+            if i != j {
+                ptr[i + 1] += 1;
+            }
+        }
+    }
+    for j in 0..n {
+        ptr[j + 1] += ptr[j];
+    }
+    let mut adj = vec![0_usize; ptr[n]];
+    let mut fill = ptr.clone();
+    for j in 0..n {
+        for p in k.col_ptr[j]..k.col_ptr[j + 1] {
+            if is_exact_zero(k.val[p]) {
+                continue;
+            }
+            let i = k.row_idx[p] as usize;
+            adj[fill[j]] = i;
+            fill[j] += 1;
+            if i != j {
+                adj[fill[i]] = j;
+                fill[i] += 1;
+            }
+        }
+    }
+    // row_of[j]: the row matched to column j; col_of[i]: the column of row i.
+    let mut row_of = vec![none; n];
+    let mut col_of = vec![none; n];
+    for j in 0..n {
+        if let Some(&i) = adj[ptr[j]..ptr[j + 1]].iter().find(|&&i| col_of[i] == none) {
+            row_of[j] = i;
+            col_of[i] = j;
+        }
+    }
+    let mut seen = vec![none; n];
+    // The lookahead of MC21: the next position at which column j looks for
+    // a free row (it only moves forward: O(nnz) in all).
+    let mut cheap = ptr[..n].to_vec();
+    // (column, next position in its adjacency, row tried)
+    let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+    for j0 in 0..n {
+        if row_of[j0] != none {
+            continue;
+        }
+        stack.clear();
+        stack.push((j0, ptr[j0], none));
+        let mut found = none;
+        while let Some(top) = stack.last_mut() {
+            let j = top.0;
+            // Lookahead: a free row adjacent to j ends the path at once.
+            while cheap[j] < ptr[j + 1] && col_of[adj[cheap[j]]] != none {
+                cheap[j] += 1;
+            }
+            if cheap[j] < ptr[j + 1] {
+                let i = adj[cheap[j]];
+                cheap[j] += 1;
+                top.2 = i;
+                found = i;
+                break;
+            }
+            if top.1 == ptr[j + 1] {
+                stack.pop();
+                continue;
+            }
+            let i = adj[top.1];
+            top.1 += 1;
+            if seen[i] == j0 {
+                continue;
+            }
+            seen[i] = j0;
+            top.2 = i;
+            if col_of[i] == none {
+                found = i;
+                break;
+            }
+            let jj = col_of[i];
+            stack.push((jj, ptr[jj], none));
+        }
+        if found == none {
+            return Some(j0);
+        }
+        // Augment: every column on the stack takes the row it tried last.
+        for &(j, _, i) in &stack {
+            row_of[j] = i;
+            col_of[i] = j;
+        }
+    }
+    None
+}
+
 impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
     /// Algorithm M: the `LBLᵀ` of the unregularized augmented system.
     #[allow(clippy::too_many_lines)] // steps M1–M6 and N4–N6 in order, as in the chapter
@@ -2248,6 +2398,10 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
         }
         let found = count_inertia(ones.into_iter(), twos.into_iter());
         let inertia = check_inertia(found, symbolic.form.expected_inertia(n))?;
+        // M7: a structurally singular K is singular, whatever M3 decided.
+        if let Some(c) = structural_deficiency(k) {
+            return Err(KktError::ZeroPivot { position: c });
+        }
         // The rows of every block in pivot order (Algorithm S′).
         let mut row_ptr = vec![0_usize; ns + 1];
         let mut row_idx: Vec<u32> = Vec::with_capacity(drows.len() + st.row_idx.len());
@@ -3786,6 +3940,79 @@ mod tests {
             let got = s.factorize(&sym, &aug, Regularization::none());
             assert!(
                 matches!(got, Err(KktError::ZeroPivot { position: 19 })),
+                "{opts:?}: {:?}",
+                got.map(|(_, i)| i)
+            );
+        }
+    }
+
+    /// Step M7: the singular systems of `random_kkt_systems` the numerical
+    /// test of M3 let through (`(m, extra, regime, v, seed)`; L1.9, L1.10,
+    /// among them the case the saved regression line `cc b6aceb…`
+    /// regenerates with relaxed supernodes) are structurally singular and
+    /// refused; and the matching on a `3 × 3` example by hand: two dual
+    /// rows on the same single primal column.
+    #[test]
+    fn structurally_singular_systems_are_refused() {
+        let cases: [(usize, usize, usize, usize, u64); 16] = [
+            (7, 0, 1, 1, 15_164_154_220_799_883_100),
+            (10, 0, 1, 1, 9_071_067_920_173_531_332),
+            (14, 0, 1, 1, 13_697_994_136_775_218_341),
+            (9, 0, 1, 1, 9_610_395_253_073_055_242),
+            (10, 0, 1, 2, 945_583_868_089_928_468),
+            (7, 0, 1, 1, 4_793_742_008_612_395_198),
+            (9, 1, 1, 2, 17_236_762_110_598_072_016),
+            (13, 0, 1, 0, 10_990_733_351_039_956_809),
+            (11, 0, 0, 0, 13_247_852_495_849_640_637),
+            (6, 0, 0, 2, 7_712_982_443_794_988_766),
+            (6, 0, 1, 2, 1_150_565_092_786_811_444),
+            (11, 0, 1, 0, 3_195_461_242_474_573_136),
+            (12, 0, 1, 0, 9_618_722_323_940_432_172),
+            (10, 0, 1, 2, 15_906_914_706_389_704_250),
+            (12, 0, 1, 2, 1_778_116_435_953_470_614),
+            (13, 1, 1, 2, 6_632_157_877_509_117_008),
+        ];
+        for (m, extra, regime, v, seed) in cases {
+            let n = m + extra;
+            let (aug, _, form) = kkt(m, n, [0.0, 4.0, 9.0][regime], seed);
+            assert!(!full_row_rank(&aug, n), "{seed}");
+            assert!(structural_deficiency(&aug).is_some(), "{seed}");
+            let s = Naive::new(NaiveDense, variants()[v]);
+            let sym = s.analyze(&aug.pattern(), form, &Amd::default()).unwrap();
+            let got = s.factorize(&sym, &aug, Regularization::none());
+            assert!(
+                matches!(got, Err(KktError::ZeroPivot { .. })),
+                "m = {m}, extra = {extra}, regime = {regime}, v = {v}, seed = {seed}: {:?}",
+                got.map(|(_, i)| i)
+            );
+            // The regularized system is quasi-definite: M7 does not apply.
+            assert!(s.factorize(&sym, &aug, Regularization::default()).is_ok());
+        }
+        // x, q₁, q₂: K = [−1 1 2; 1 0 0; 2 0 0] has rank 2.
+        let k = CscMatrix::from_triplets(
+            3,
+            3,
+            &[
+                (Row(0), Col(0), -1.0),
+                (Row(1), Col(0), 1.0),
+                (Row(2), Col(0), 2.0),
+            ],
+        )
+        .unwrap();
+        let form = KktForm::Augmented {
+            n_primal: 1,
+            n_dual: 2,
+        };
+        assert_eq!(structural_deficiency(&k), Some(2));
+        for opts in variants() {
+            let s = Naive::new(NaiveDense, opts);
+            let sym = s.analyze(&k.pattern(), form, &Amd::default()).unwrap();
+            let got = s.factorize(&sym, &k, Regularization::none());
+            assert!(
+                matches!(
+                    got,
+                    Err(KktError::ZeroPivot { .. } | KktError::WrongInertia { .. })
+                ),
                 "{opts:?}: {:?}",
                 got.map(|(_, i)| i)
             );

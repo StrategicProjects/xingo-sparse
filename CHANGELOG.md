@@ -95,22 +95,35 @@ unchanged; see "Breaking" for what is not.
   `n = 10`, seed `15906914706389704250`, every supernode on the kernel
   path), kept as a deterministic test with a `5 × 5` test of the structure.
 
+* `SupernodalLdl`, `LBLᵀ` path: a structurally singular `K` (no perfect
+  matching on the nonzero entries — for an augmented system, `A` of
+  structural rank below its row count) is refused with
+  `KktError::ZeroPivot` even when the numerical test of step M3 let every
+  pivot through (new step M7 of Chapter 5.17, after N6; an error the
+  numerical steps report keeps its kind and its row, and a factor that
+  passes is unchanged bit for bit). All 557 singular systems of 20 000
+  random cases of the property test are structurally singular; before this
+  step 11 of them were factorized with the expected inertia. The saved
+  regression line `cc b6aceb…` (L1.9; relaxed supernodes) is in the
+  regression file, and 16 seeds are a deterministic test.
+
 ### Known limitations
 
 * The `LBLᵀ` path can still factorize a singular matrix without an error
-  when the zero pivot comes out as rounding noise above
+  when `K` is structurally nonsingular and numerically singular (the
+  Netlib `A` of etamacro: full structural rank, rank 399 of 400 by SVD),
+  the zero pivot comes out as rounding noise above
   `SupernodalOptions::zero_pivot_tol` times its reference scale and with
-  the sign the inertia expects. Two mechanisms remain, both on both paths:
-  a `2×2` block taken with a diagonal that is itself rounding noise
-  carries that noise into the rows it updates, with terms of the size of
-  the noise; and noise accumulated through several pivots can exceed
-  `10⁻¹⁴` times the largest term (measured up to `2·10⁻¹¹`; the rounding
-  of entries off the diagonal, amplified by large entries of `L`, has no
-  reference scale). The same seed with relaxed supernodes is one of them
-  (`1.5·10⁻¹⁴`). Measured on 20 000 random cases of the property test: 11
-  of 557 singular systems (0.4.0 before this fix: 15). The property test
-  can therefore still fail on a random seed. The default regularization is
-  not affected.
+  the sign the inertia expects. This is not a defect of the scale that a
+  better scale removes: a backward-stable `LBLᵀ` is the exact factor of
+  `K + E` with `E` on the pattern of the factor, and `K + E` is in general
+  nonsingular (measured: a computed factor that is, to four digits, the
+  exact factor of a nonsingular matrix `0.95 u` away from `K` in one dual
+  diagonal entry; task L1.10). Four stronger scales (first-order error
+  bounds through the rows of `L⁻¹`, the uncertainty of a noise diagonal of
+  a `2×2` block, rook pivoting, a stricter `pivot_threshold`) catch more
+  but each makes nonsingular Netlib systems fail with `ZeroPivot`, and
+  were not adopted. The default regularization is not affected.
 
 ## [0.3.2] — 2026-11-14
 
