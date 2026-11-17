@@ -1500,7 +1500,10 @@ fn multiplier_pilot(weak: f64, limit: f64) -> (f64, usize) {
 /// update.
 #[test]
 fn multiplier_limit_bounds_the_loss_of_the_update() {
-    assert_eq!(LuOptions::default().update_multiplier_limit, 1e6);
+    assert_eq!(
+        LuOptions::default().update_multiplier_limit.to_bits(),
+        1e6_f64.to_bits()
+    );
     let (off, none) = multiplier_pilot(1e-8, f64::INFINITY);
     let (on, refused) = multiplier_pilot(1e-8, LuOptions::default().update_multiplier_limit);
     assert!(off > 1e7, "without the limit: {off:e}");

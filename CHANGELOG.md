@@ -78,6 +78,18 @@ unchanged; see "Breaking" for what is not.
 * For a scalar other than `f64`, `Lu::default()`, `Regularization::default()`
   and `Refinement::default()` return other values than in 0.3.x.
 
+### Known limitations
+
+* `SupernodalLdl` with `Regularization::none()` (the `LBLᵀ` path) can
+  factorize a singular quasi-definite matrix without an error: when the
+  constraint block `A` is rank deficient, the zero pivot may come out as
+  rounding noise above `SupernodalOptions::zero_pivot_tol` and with the
+  sign the inertia expects, so neither `KktError::ZeroPivot` nor
+  `KktError::WrongInertia` is returned. Present since 0.3.0; found by the
+  crate's own property test (`m = 10`, `n = 10`, seed
+  `15906914706389704250`), which can therefore fail on a random seed. The
+  default regularization is not affected.
+
 ## [0.3.2] — 2026-11-14
 
 ### Changed
