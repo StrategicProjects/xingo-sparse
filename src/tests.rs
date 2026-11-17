@@ -1326,6 +1326,37 @@ fn refactor_pivot_tol_is_checked() {
 
 /// Random KKT systems for the tests of the backends (task L1.6a; the
 /// generator of the `FaerLdl` tests of L1.5, shared).
+// ---------------------------------------------------------------------------
+// Rule P of Chapter 5.3 (task L1.8): the defaults for a scalar.
+// ---------------------------------------------------------------------------
+
+/// Invariant (O1): the identity for `f64`; for another scalar (the
+/// test-only `f32`, `ρ = 2²⁹`) the three noise thresholds scaled by
+/// exactly `ρ` and every other field equal; `Lu::<T>::default()` uses it.
+#[test]
+#[allow(clippy::float_cmp)] // the scalings are exact (powers of two)
+fn for_scalar_scales_three_thresholds_and_nothing_else() {
+    let d = LuOptions::default();
+    assert_eq!(LuOptions::for_scalar::<f64>(), d);
+    let p = LuOptions::for_scalar::<f32>();
+    let rho = f64::from(f32::EPSILON) / f64::EPSILON;
+    assert_eq!(rho, 2f64.powi(29));
+    assert_eq!(p.drop_tol, d.drop_tol * rho);
+    assert_eq!(p.abs_pivot_tol, d.abs_pivot_tol * rho);
+    assert_eq!(p.update_stability_tol, d.update_stability_tol * rho);
+    assert_eq!(
+        LuOptions {
+            drop_tol: d.drop_tol,
+            abs_pivot_tol: d.abs_pivot_tol,
+            update_stability_tol: d.update_stability_tol,
+            ..p
+        },
+        d
+    );
+    assert_eq!(*LuFactor::options(&Lu::<f32>::default()), p);
+    assert_eq!(*LuFactor::options(&LuF64::default()), d);
+}
+
 pub(crate) mod kkt_gen {
     use crate::real::is_exact_zero;
     use crate::{Col, CscMatrix, KktForm, Row};

@@ -165,6 +165,23 @@
 //! values passes them; [`ShiftScale::Absolute`] keeps shifts in the
 //! caller's units.
 //!
+//! *The defaults and the scalar (task L1.8).* The three facts above are
+//! statements about the unit roundoff, so the defaults follow it. With
+//! `ρ_T = ε_T / ε₆₄` (Rule P of Chapter 5.3): the static shifts and the
+//! bump are multiplied by `√ρ_T` — fact 2 constrains the *product* of the
+//! shifts, `ρδ ≈ 45 ε_T`, and the bump is of the order of `√ε_T` —, the
+//! pivot tolerance `τ` and the target of [`Refinement::default`] by
+//! `ρ_T` (magnitudes of rounding noise). `√ρ_T` is computed in `f64`. For
+//! `f64` both factors are 1 and the defaults are those measured in
+//! L1.5b, bit for bit. In double-double (`√ρ = 2⁻²⁶`, exact): `ρ ≈
+//! 1.5·10⁻¹⁴`, `δ ≈ 1.5·10⁻¹⁶`, target `2.2·10⁻²⁸`; on the augmented
+//! systems of `xingo-extprec`'s `dd_profile` the plain solve then leaves
+//! `10⁻¹¹`–`10⁻¹³` and refinement reaches the target in 2–4 steps where
+//! it is attainable (5–8 with the `f64` shifts; D-0111). The budget of ten
+//! steps is kept. The two thresholds of the pivoted path,
+//! [`crate::SupernodalOptions`]`::{zero_pivot_tol, pivot_threshold}`, do
+//! not scale (Chapter 5.17).
+//!
 //! ## Algorithm F (Refinement by preconditioned GMRES, with the best iterate; (S7))
 //! Given a factor `F ≈ K_reg`, the matrix `K` to be solved (the
 //! *unregularized* one, or `K_reg` itself — whichever the caller passes),
@@ -250,6 +267,12 @@
 //!      exactly when the returned `x` has a non-finite entry, and then
 //!      `converged = false` (the input `K`, `b` being finite).
 //!
+//! (K2) `Regularization::<f64>::default()` and `Refinement::<f64>::default()`
+//!      are the values of the second edition (`10⁻⁶`, `10⁻⁸`, `10⁻¹³`,
+//!      `2·10⁻⁷`; ten steps, `10⁻¹²`), bit for bit; for another scalar
+//!      they are those values times `√ρ_T` or `ρ_T` as stated in
+//!      "Choosing the regularization". Tested.
+//!
 //! ## References
 //! Chen, Davis, Hager & Rajamanickam, "Algorithm 887: CHOLMOD, supernodal
 //! sparse Cholesky factorization and update/downdate", ACM TOMS 35(3),
@@ -283,7 +306,7 @@
 //! product `ρδ` above the rounding level for a stable quasi-definite
 //! factorization).
 
-use crate::real::{Real, is_exact_zero, is_nan, le, lt};
+use crate::real::{Real, eps_ratio, is_exact_zero, is_nan, le, lt};
 use crate::{CscMatrix, KktError, Ordering, Pattern, SparseError};
 
 /// Inertia `(positive, negative, zero)` of a symmetric factorization: the
@@ -339,7 +362,7 @@ pub struct Regularization<T: Real = f64> {
 }
 
 impl<T: Real> Default for Regularization<T> {
-    /// `ρ = 10⁻⁶`, `δ = 10⁻⁸` *in the equilibrated matrix*
+    /// For `f64`: `ρ = 10⁻⁶`, `δ = 10⁻⁸` *in the equilibrated matrix*
     /// ([`ShiftScale::Equilibrated`]: relative to each row), and pivots of
     /// the wrong sign or of magnitude at most `τ = 10⁻¹³` bumped to
     /// `±β = ±2·10⁻⁷`. `ρδ = 10⁻¹⁴`, about 50 units of roundoff, keeps the
@@ -348,12 +371,18 @@ impl<T: Real> Default for Regularization<T> {
     /// "Choosing the regularization", measured in L1.5b). `τ`, `β` are of
     /// the order of the defaults of current interior-point codes
     /// (Clarabel's documented dynamic regularization; not tuned here).
+    ///
+    /// For another scalar `T` (task L1.8): `ρ`, `δ` and `β` times `√ρ_T`,
+    /// `τ` times `ρ_T`, with `ρ_T = ε_T / ε₆₄` (Chapter 5.14, "The
+    /// defaults and the scalar"; invariant (K2)).
     fn default() -> Self {
+        let rho = eps_ratio::<T>();
+        let root = rho.sqrt();
         Self {
-            primal: T::from_f64(1e-6),
-            dual: T::from_f64(1e-8),
-            pivot_tol: Some(T::from_f64(1e-13)),
-            bump: T::from_f64(2e-7),
+            primal: T::from_f64(1e-6 * root),
+            dual: T::from_f64(1e-8 * root),
+            pivot_tol: Some(T::from_f64(1e-13 * rho)),
+            bump: T::from_f64(2e-7 * root),
             scale: ShiftScale::Equilibrated,
         }
     }
@@ -411,11 +440,12 @@ pub struct Refinement<T: Real = f64> {
 }
 
 impl<T: Real> Default for Refinement<T> {
-    /// Ten steps, target `10⁻¹²`.
+    /// Ten steps, target `10⁻¹² ρ_T` (`10⁻¹²` for `f64`; `ρ_T = ε_T /
+    /// ε₆₄`, Chapter 5.14, "The defaults and the scalar").
     fn default() -> Self {
         Self {
             max_iters: 10,
-            target_residual: T::from_f64(1e-12),
+            target_residual: T::from_f64(1e-12 * eps_ratio::<T>()),
         }
     }
 }
@@ -1096,6 +1126,32 @@ pub(crate) fn check_inertia(found: Inertia, expected: Inertia) -> Result<Inertia
 mod tests {
     use super::*;
     use crate::{Col, Row};
+
+    /// Invariant (K2): the `f64` defaults of the second edition bit for
+    /// bit, and for the test-only `f32` (`ρ = 2²⁹`) the same values times
+    /// `√ρ` or `ρ`, computed in `f64`.
+    #[test]
+    #[allow(clippy::float_cmp, clippy::cast_possible_truncation)] // exact identities
+    fn defaults_follow_the_scalar() {
+        let r = Regularization::<f64>::default();
+        assert_eq!(
+            (r.primal.to_bits(), r.dual.to_bits(), r.bump.to_bits()),
+            (1e-6_f64.to_bits(), 1e-8_f64.to_bits(), 2e-7_f64.to_bits())
+        );
+        assert_eq!(r.pivot_tol.map(f64::to_bits), Some(1e-13_f64.to_bits()));
+        assert_eq!(r.scale, ShiftScale::Equilibrated);
+        let f = Refinement::<f64>::default();
+        assert_eq!((f.max_iters, f.target_residual.to_bits()), (10, 1e-12_f64.to_bits()));
+        let rho = f64::from(f32::EPSILON) / f64::EPSILON;
+        let root = rho.sqrt();
+        let r = Regularization::<f32>::default();
+        assert_eq!(r.primal, (1e-6 * root) as f32);
+        assert_eq!(r.dual, (1e-8 * root) as f32);
+        assert_eq!(r.pivot_tol, Some((1e-13 * rho) as f32));
+        assert_eq!(r.bump, (2e-7 * root) as f32);
+        let f = Refinement::<f32>::default();
+        assert_eq!((f.max_iters, f.target_residual), (10, (1e-12 * rho) as f32));
+    }
 
     #[test]
     fn lower_with_diagonal_accepts_lower_and_symmetric_patterns() {

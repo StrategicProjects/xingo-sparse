@@ -201,6 +201,16 @@ impl Real for f32 {
 // meet `<`, `>` or `==` (Chapter 5, §5.C); the definitions are those of
 // `xingo_core::Tolerances` (Chapter 1.3), generic in `T`.
 
+/// `ρ_T = ε_T / ε₆₄` in `f64` (Rule P of Chapter 5.3; task L1.8): `1` for
+/// `f64`, `2⁻⁵²` for the double-double of `xingo-extprec`. The factor by
+/// which a default threshold that is a magnitude of rounding noise is
+/// carried from `f64` to `T`; for a scalar whose epsilon is a power of two
+/// it is a power of two, and every product with it is exact.
+#[inline]
+pub(crate) fn eps_ratio<T: Real>() -> f64 {
+    T::EPSILON.to_f64() / f64::EPSILON
+}
+
 /// The scale `s(a, b) = max(1, |a|, |b|)`.
 #[inline]
 fn scale<T: Real>(a: T, b: T) -> T {

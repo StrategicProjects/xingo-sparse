@@ -172,6 +172,39 @@
 //! [`LuOptions::drop_tol`] (the solver copies them in when it creates a
 //! factor).
 //!
+//! ## Thresholds and the scalar (Rule P; task L1.8)
+//! `LuOptions::default()` is calibrated for `f64`: three of its fields
+//! are multiples of the machine epsilon in disguise. With `ε₆₄ = 2⁻⁵²`,
+//! `ε_T` = [`Real::EPSILON`] and `ρ_T = ε_T / ε₆₄`:
+//!
+//! P1. \[Scale.\] A threshold that is a magnitude below which a *computed*
+//!     quantity is taken for rounding noise — `drop_tol`, `abs_pivot_tol`,
+//!     `update_stability_tol` — is multiplied by `ρ_T`.
+//! P2. \[Keep.\] Every other option keeps its default: `rel_pivot_tol` and
+//!     `growth_limit` trade sparsity against growth,
+//!     `update_multiplier_limit` bounds a growth too (Chapter 5.5, step
+//!     U4′), the rest is structure and cost.
+//!
+//! [`LuOptions::for_scalar`] is Rule P, and `Lu::<T>::default()` uses it;
+//! for `f64`, `ρ = 1` and it returns `LuOptions::default()` bit for bit
+//! (invariant (O1)). `ρ_T` is computed in `f64` (`T::EPSILON.to_f64() /
+//! f64::EPSILON`); for a scalar whose epsilon is a power of two the three
+//! products are exact. The rule is meant for `ε_T ≤ ε₆₄`; for a coarser
+//! scalar it extrapolates (for `f32`, `ρ = 2²⁹`: `abs_pivot_tol ≈ 0.05`)
+//! and the caller should check the result. `LuOptions::default()` passed
+//! by hand to `Lu::<T>::new` keeps the `f64` thresholds — with them a
+//! double-double factorization is only as accurate as an `f64` one.
+//! Measurements: Chapter 11.8 of `xingo-extprec` (D-0111).
+//!
+//! In `f64` the absolute pivot tolerance is also the only guard of the
+//! update against a tiny pivot `α_r`; scaled by `ρ` it no longer guards a
+//! double-double update, and the multiplier limit of step U4′ (Chapter
+//! 5.5), which Rule P keeps, is what bounds the loss there.
+//!
+//! (O1) `LuOptions::for_scalar::<f64>() == LuOptions::default()`;
+//!      `for_scalar::<T>()` differs from the default in the three fields
+//!      of P1 only, each exactly `ρ_T` times the default. Tested.
+//!
 //! ## Complexity
 //! The triangular phase costs `O(nnz(B))` plus one division per `L` entry.
 //! A Markowitz pivot costs `O(Σ_j c_j)` over the columns of its `U` row,
@@ -192,7 +225,7 @@
 
 use crate::basis::ColumnSource;
 use crate::error::LuError;
-use crate::real::{Real, approx_eq, is_exact_zero, is_zero, le_exact, lt};
+use crate::real::{Real, approx_eq, eps_ratio, is_exact_zero, is_zero, le_exact, lt};
 use crate::solve::{Kind, NO_ETA, SolveStats, Workspace};
 use crate::store::{CountLists, LineStore, NIL, check_links, remove_linked};
 use crate::symbolic::SymbolicLu;
@@ -284,6 +317,28 @@ impl Default for LuOptions {
 }
 
 impl LuOptions {
+    /// The defaults for the scalar `T` (Rule P of the module
+    /// documentation): [`LuOptions::default`] with `drop_tol`,
+    /// `abs_pivot_tol` and `update_stability_tol` multiplied by `ε_T /
+    /// ε₆₄`. The identity for `f64` (invariant (O1)); what
+    /// `Lu::<T>::default()` uses.
+    ///
+    /// ```
+    /// use xingo_sparse::LuOptions;
+    /// assert_eq!(LuOptions::for_scalar::<f64>(), LuOptions::default());
+    /// ```
+    #[must_use]
+    pub fn for_scalar<T: Real>() -> Self {
+        let rho = eps_ratio::<T>();
+        let d = Self::default();
+        Self {
+            abs_pivot_tol: d.abs_pivot_tol * rho,
+            update_stability_tol: d.update_stability_tol * rho,
+            drop_tol: d.drop_tol * rho,
+            ..d
+        }
+    }
+
     /// `search_limit ≥ 1`, `rel_pivot_tol ∈ (0, 1]`, and the tolerances
     /// finite and non-negative (asserted in debug builds when the options
     /// are installed).
@@ -467,8 +522,10 @@ pub struct Lu<T: Real = f64, U: BasisUpdate<T> = ForrestTomlin<T>> {
 }
 
 impl<T: Real, U: BasisUpdate<T>> Default for Lu<T, U> {
+    /// An empty factor with [`LuOptions::for_scalar`]`::<T>()` (Rule P):
+    /// for `f64`, `LuOptions::default()`.
     fn default() -> Self {
-        Self::new(LuOptions::default())
+        Self::new(LuOptions::for_scalar::<T>())
     }
 }
 

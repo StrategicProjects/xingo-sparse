@@ -370,6 +370,17 @@
 //! L1.5b), is the one to use. The refinement of Algorithm F is the
 //! safeguard here too, and (S10) still refuses a factor with an infinity.
 //!
+//! *The two thresholds and the scalar (task L1.8, D-0113 S3).* Unlike the
+//! defaults of Chapter 5.14, [`SupernodalOptions::zero_pivot_tol`] and
+//! [`SupernodalOptions::pivot_threshold`] do **not** scale with `ε_T`:
+//! the first is relative (a pivot against the terms that produced it), the
+//! second a growth threshold. Both were measured scaled (`× ρ_T` and `×
+//! √ρ_T`) in double-double without any difference on the matrices tried
+//! (Chapter 11.8 of `xingo-extprec`), and delaying a relative `10⁻¹⁴`
+//! pivot costs little (it finds a `2×2` partner in the parent), while
+//! relaxing a guard against small pivots without a measurement is what
+//! made the Forrest–Tomlin update lose accuracy (Chapter 5.5, step U4′).
+//!
 //! ## Algorithm S (Solve)
 //! `y ← P x` gathered into the factor's work vector (`y_k = x_{fwd[k]}`;
 //! a second thread solving with the same factor at the same moment uses
