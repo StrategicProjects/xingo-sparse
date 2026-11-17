@@ -1141,7 +1141,10 @@ mod tests {
         assert_eq!(r.pivot_tol.map(f64::to_bits), Some(1e-13_f64.to_bits()));
         assert_eq!(r.scale, ShiftScale::Equilibrated);
         let f = Refinement::<f64>::default();
-        assert_eq!((f.max_iters, f.target_residual.to_bits()), (10, 1e-12_f64.to_bits()));
+        assert_eq!(
+            (f.max_iters, f.target_residual.to_bits()),
+            (10, 1e-12_f64.to_bits())
+        );
         let rho = f64::from(f32::EPSILON) / f64::EPSILON;
         let root = rho.sqrt();
         let r = Regularization::<f32>::default();

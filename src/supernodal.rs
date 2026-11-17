@@ -2287,8 +2287,7 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
                 for (gq, &r) in g[nc..].iter_mut().zip(rows) {
                     *gq = y[r as usize];
                 }
-                self.kernel
-                    .solve_unit_lower(blk, &lb.first[s0..s1], g);
+                self.kernel.solve_unit_lower(blk, &lb.first[s0..s1], g);
                 y[s0..s1].copy_from_slice(&g[..nc]);
                 for (&gq, &r) in g[nc..].iter().zip(rows) {
                     y[r as usize] = gq;
@@ -2354,8 +2353,7 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
                 for (gq, &r) in g[nc..].iter_mut().zip(rows) {
                     *gq = y[r as usize];
                 }
-                self.kernel
-                    .solve_unit_lower_t(blk, &lb.first[s0..s1], g);
+                self.kernel.solve_unit_lower_t(blk, &lb.first[s0..s1], g);
                 y[s0..s1].copy_from_slice(&g[..nc]);
                 continue;
             }
@@ -3814,7 +3812,10 @@ mod tests {
             }
         }
         assert!(hooked_ldl > 0, "no LDLᵀ supernode took the kernel path");
-        assert!(pairs > 0 && pair_at_edge, "pairs {pairs}, at an edge {pair_at_edge}");
+        assert!(
+            pairs > 0 && pair_at_edge,
+            "pairs {pairs}, at an edge {pair_at_edge}"
+        );
     }
 
     #[cfg(feature = "faer")]

@@ -5,6 +5,79 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [0.4.0] — unreleased
+
+Scalars other than `f64` (task L1.8 of the Xingó plan, D-0113): the
+defaults follow the scalar, the solves of `SupernodalLdl` can run in the
+dense kernel, and the Forrest–Tomlin update bounds the multipliers of its
+row etas. In `f64` every solver path is unchanged where a default is
+unchanged; see "Breaking" for what is not.
+
+### Added
+
+* `LuOptions::for_scalar::<T>()`: the defaults for the scalar `T` (Rule P,
+  Chapter 5.3) — `drop_tol`, `abs_pivot_tol` and `update_stability_tol`,
+  the three thresholds that are magnitudes of rounding noise, multiplied by
+  `ε_T / ε₆₄`; the identity for `f64` (invariant (O1)).
+* `LuOptions::update_multiplier_limit` (default `1e6`) and step U4′ of the
+  Forrest–Tomlin update (Chapter 5.5): an update whose row eta needs a
+  multiplier `|μ_k|` above the limit is not applied and returns
+  `RefactorNeeded(RefactorReason::Unstable)`. The stability test of step
+  U4 compares two orders of summation of the same terms and does not see
+  large multipliers: measured in `f64` with the 0.3.x defaults, updated
+  factors up to `5.5·10⁹` times less accurate than fresh ones
+  (`4·10¹⁶` in double-double); with the default limit `3.6·10⁷` and
+  `8.7·10⁷` on the same grid (the experiment is in the documentation of
+  the field). `f64::INFINITY` restores the 0.3.x update exactly.
+* `UpdateStats::max_multiplier`: the largest `|μ_k|` stored since the last
+  factorization (invariant (F4)).
+* `DenseKernel::{solve_min_rows, solve_unit_lower, solve_unit_lower_t}`,
+  provided methods (Algorithms V and W of Chapter 5.16): the two halves of
+  a supernode's solve, which `SupernodalLdl` sends through the kernel for
+  the blocks of at least `solve_min_rows()` rows (step S0′ of Chapter
+  5.17; `usize::MAX`, the default, keeps the loops). The provided methods
+  return the bits of the 0.3.x solve (invariant (D4)); a kernel that
+  overrides them should too. `NaiveDense` and `FaerDense` do not override
+  them. Supernodes of one column of the `LDLᵀ` path keep their loops.
+
+### Changed
+
+* `Lu::<T>::default()` uses `LuOptions::for_scalar::<T>()` (for `f64`,
+  `LuOptions::default()` as before). `LuOptions::default()` itself is
+  unchanged and stays calibrated for `f64`.
+* `Regularization::<T>::default()` and `Refinement::<T>::default()` follow
+  the scalar (Chapter 5.14): the shifts and the bump times `√(ε_T/ε₆₄)`,
+  the pivot tolerance and the refinement target times `ε_T/ε₆₄`. The
+  `f64` values are those of 0.3.x, bit for bit (invariant (K2)).
+  `SupernodalOptions` does not change (Chapter 5.17).
+* `NaiveDense::potrf` runs by columns (left-looking, Algorithm P of
+  Chapter 5.16: `a_ij ← a_ij − l_ik · l_jk` term by term instead of a sum
+  formed apart): vectorizable with the same bits. Its factor differs from
+  0.3.x's in rounding from the third column on (and possibly in the sign
+  of a zero); no bound changes. Nothing in the crate calls `potrf`, so no
+  factorization or solve of the crate changes.
+* The work vector of `SupernodalLdl`'s solve has `N + max_s n_r(s)`
+  entries (allocated by the factorization, as before: the solve still
+  allocates nothing).
+* Documentation: requirement (R1) of `Real` asks for operations with a
+  relative error of at most `c_T · ε_T`, `c_T ≤ 4`, deterministic — not
+  correctly rounded ones (the double-double of `xingo-extprec` is faithful
+  with proven bounds; D-0109, E2).
+
+### Breaking
+
+* `LuOptions` and `UpdateStats` have a new public field each
+  (`update_multiplier_limit`, `max_multiplier`): a struct literal without
+  `..Default::default()` and an exhaustive destructuring no longer compile.
+* The default multiplier limit changes the behaviour of `Lu` in `f64`: an
+  update with a multiplier above `10⁶` now asks for a refactorization
+  instead of being applied. A caller that needs the 0.3.x sequence of
+  updates sets `update_multiplier_limit: f64::INFINITY` (the simplex method
+  of `xingo-simplex` does: on 7 of the 93 Netlib problems the limit would
+  refuse updates, 126 in all, and every refusal changes its path).
+* For a scalar other than `f64`, `Lu::default()`, `Regularization::default()`
+  and `Refinement::default()` return other values than in 0.3.x.
+
 ## [0.3.2] — 2026-11-14
 
 ### Changed

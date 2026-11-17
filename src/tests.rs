@@ -1321,12 +1321,6 @@ fn refactor_pivot_tol_is_checked() {
 }
 
 // ---------------------------------------------------------------------------
-// Generators of KKT systems (Chapters 5.15 and 5.17).
-// ---------------------------------------------------------------------------
-
-/// Random KKT systems for the tests of the backends (task L1.6a; the
-/// generator of the `FaerLdl` tests of L1.5, shared).
-// ---------------------------------------------------------------------------
 // Rule P of Chapter 5.3 (task L1.8): the defaults for a scalar.
 // ---------------------------------------------------------------------------
 
@@ -1368,6 +1362,7 @@ fn for_scalar_scales_three_thresholds_and_nothing_else() {
 /// residual of the updated factor over that of a fresh factorization of
 /// the same basis (floored at 1), and the number of updates refused by
 /// step U4′.
+#[allow(clippy::too_many_lines)] // the pilot's sequence in one place
 fn multiplier_pilot(weak: f64, limit: f64) -> (f64, usize) {
     struct Lcg(u64);
     impl Lcg {
@@ -1453,7 +1448,9 @@ fn multiplier_pilot(weak: f64, limit: f64) -> (f64, usize) {
         update_multiplier_limit: f64::INFINITY,
         ..opts
     };
-    let mut heading: Vec<ColumnRef> = (0..n).map(|j| ColumnRef::Structural(Col::from_usize(j))).collect();
+    let mut heading: Vec<ColumnRef> = (0..n)
+        .map(|j| ColumnRef::Structural(Col::from_usize(j)))
+        .collect();
     let mut lu = LuF64::new(opts);
     fz(&mut lu, &heading, &a).unwrap();
     let (mut worst, mut refused) = (0.0_f64, 0);
@@ -1512,6 +1509,12 @@ fn multiplier_limit_bounds_the_loss_of_the_update() {
     assert!(refused > 0);
 }
 
+// ---------------------------------------------------------------------------
+// Generators of KKT systems (Chapters 5.15 and 5.17).
+// ---------------------------------------------------------------------------
+
+/// Random KKT systems for the tests of the backends (task L1.6a; the
+/// generator of the `FaerLdl` tests of L1.5, shared).
 pub(crate) mod kkt_gen {
     use crate::real::is_exact_zero;
     use crate::{Col, CscMatrix, KktForm, Row};

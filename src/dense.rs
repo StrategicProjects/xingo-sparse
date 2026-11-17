@@ -921,6 +921,7 @@ mod tests {
     /// increasing), and some differ from the 0.3.x order (a sum formed
     /// apart).
     #[test]
+    #[allow(clippy::needless_range_loop)] // entries (i, j) of a matrix
     fn potrf_follows_its_statement_entry_by_entry() {
         let n = 5;
         let bits = |x: f64| x.to_bits();
@@ -951,10 +952,18 @@ mod tests {
             }
             for j in 0..n {
                 for i in j..n {
-                    assert_eq!(bits(got.get(i, j)), bits(l[i][j]), "seed {seed}: ({i}, {j})");
+                    assert_eq!(
+                        bits(got.get(i, j)),
+                        bits(l[i][j]),
+                        "seed {seed}: ({i}, {j})"
+                    );
                 }
                 for i in 0..j {
-                    assert_eq!(bits(got.get(i, j)), bits(a0.get(i, j)), "(D3) at ({i}, {j})");
+                    assert_eq!(
+                        bits(got.get(i, j)),
+                        bits(a0.get(i, j)),
+                        "(D3) at ({i}, {j})"
+                    );
                 }
             }
             // The 0.3.x order: each entry's sum formed apart.
