@@ -25,10 +25,28 @@
 //! and `2×2` blocks; `α = (1 + √17)/8 ≈ 0.6404` is Bunch & Kaufman's
 //! constant, which minimizes the bound on element growth.
 //!
-//! ## Algorithm P (`potrf`, Cholesky by columns)
-//! For `j = 0, …, n − 1`: `d ← a_jj − Σ_{k<j} l_jk²`; if `d ≤ 0` (or not
-//! finite) fail with [`DenseError::NotPositiveDefinite`] at `j`;
-//! `l_jj ← √d`; for `i > j`, `l_ij ← (a_ij − Σ_{k<j} l_ik l_jk) / l_jj`.
+//! ## Algorithm P (`potrf`, Cholesky by columns, left-looking)
+//! For `j = 0, …, n − 1`:
+//! P1. \[Update.\] For `k = 0, …, j − 1`, in this order: `a_ij ← a_ij −
+//!     l_ik · l_jk` for `i = j, …, n − 1` (a contiguous column update
+//!     with the column `k` of `L` from row `j` down, scaled by `l_jk`).
+//! P2. \[Pivot.\] `d ← a_jj`; if `d ≤ 0` or `d` is not finite, fail with
+//!     [`DenseError::NotPositiveDefinite`] at `j`; `l_jj ← √d`.
+//! P3. \[Scale.\] `l_ij ← a_ij / l_jj` for `i > j`.
+//!
+//! *Loop order (task L1.8).* Until 0.3.x each entry was formed as `a_ij −
+//! Σ_{k<j} l_ik l_jk` with the sum accumulated apart, along a row of `L`
+//! (a stride of `n` between terms), which no kernel can run on vector
+//! lanes with the same bits. P1 subtracts term by term, the statement of
+//! `gemm_sub` and `trsm_lower` (`x ← x − a · t`, the entry of the column
+//! first), so a kernel that vectorizes those vectorizes `potrf` bit for
+//! bit. The operands, the order of `k` and the order of the factors are
+//! those of 0.3.x; the factor differs from 0.3.x's in rounding from the
+//! third column on (and possibly in the sign of a zero in the first), no
+//! bound changes (Higham 2002, Theorem 10.3, holds for either order), and
+//! a block on the edge of definiteness may fail in one order and pass in
+//! the other. On failure the lower triangle is left partially factorized,
+//! as before.
 //!
 //! ## Algorithm B (`sytrf`, Bunch–Kaufman partial pivoting)
 //! On a working copy `W` of the symmetric matrix, `k ← 0`; while `k < n`:
@@ -212,15 +230,25 @@ impl<T: Real> DenseKernel<T> for NaiveDense {
     fn potrf(&self, a: &mut DenseBlock<T>) -> Result<(), DenseError> {
         let n = a.square()?;
         for j in 0..n {
-            let d = a.get(j, j) - (0..j).map(|k| a.get(j, k) * a.get(j, k)).sum::<T>();
+            let (done, rest) = a.data.split_at_mut(j * n);
+            let cj = &mut rest[j..n];
+            // P1.
+            for k in 0..j {
+                let t = done[j + k * n];
+                for (x, &l) in cj.iter_mut().zip(&done[j + k * n..(k + 1) * n]) {
+                    *x -= l * t;
+                }
+            }
+            // P2.
+            let d = cj[0];
             if !d.is_finite() || le(d, T::ZERO, T::ZERO) {
                 return Err(DenseError::NotPositiveDefinite { position: j });
             }
             let ljj = d.sqrt();
-            a.set(j, j, ljj);
-            for i in j + 1..n {
-                let s = a.get(i, j) - (0..j).map(|k| a.get(i, k) * a.get(j, k)).sum::<T>();
-                a.set(i, j, s / ljj);
+            cj[0] = ljj;
+            // P3.
+            for x in &mut cj[1..] {
+                *x = *x / ljj;
             }
         }
         Ok(())
@@ -764,6 +792,66 @@ mod tests {
         );
         a.data.pop();
         assert_eq!(NaiveDense.potrf(&mut a), Err(DenseError::Dimension));
+    }
+
+    /// Algorithm P entry by entry (task L1.8): the factors of 32 random
+    /// `5×5` blocks are, bit for bit, those of a reference written with the
+    /// statement `x ← x − a · t` spelled out (entry of the column first, `k`
+    /// increasing), and some differ from the 0.3.x order (a sum formed
+    /// apart).
+    #[test]
+    fn potrf_follows_its_statement_entry_by_entry() {
+        let n = 5;
+        let bits = |x: f64| x.to_bits();
+        let mut differs = 0;
+        for seed in 1..=32_u64 {
+            let a0 = symmetric(n, seed, true);
+            let mut got = a0.clone();
+            NaiveDense.potrf(&mut got).unwrap();
+            let mut l = vec![vec![0.0_f64; n]; n];
+            for (i, row) in l.iter_mut().enumerate() {
+                for (j, x) in row.iter_mut().enumerate().take(i + 1) {
+                    *x = a0.get(i, j);
+                }
+            }
+            for j in 0..n {
+                for k in 0..j {
+                    let t = l[j][k];
+                    for row in l.iter_mut().skip(j) {
+                        let a = row[k];
+                        row[j] -= a * t;
+                    }
+                }
+                let ljj = l[j][j].sqrt();
+                l[j][j] = ljj;
+                for row in l.iter_mut().skip(j + 1) {
+                    row[j] /= ljj;
+                }
+            }
+            for j in 0..n {
+                for i in j..n {
+                    assert_eq!(bits(got.get(i, j)), bits(l[i][j]), "seed {seed}: ({i}, {j})");
+                }
+                for i in 0..j {
+                    assert_eq!(bits(got.get(i, j)), bits(a0.get(i, j)), "(D3) at ({i}, {j})");
+                }
+            }
+            // The 0.3.x order: each entry's sum formed apart.
+            let mut old = vec![vec![0.0_f64; n]; n];
+            for j in 0..n {
+                let d = a0.get(j, j) - (0..j).map(|k| old[j][k] * old[j][k]).sum::<f64>();
+                old[j][j] = d.sqrt();
+                for i in j + 1..n {
+                    let s = a0.get(i, j) - (0..j).map(|k| old[i][k] * old[j][k]).sum::<f64>();
+                    old[i][j] = s / old[j][j];
+                }
+            }
+            if (0..n).any(|j| (j..n).any(|i| bits(old[i][j]) != bits(l[i][j]))) {
+                differs += 1;
+            }
+        }
+        // The statement is not the 0.3.x one: some blocks round differently.
+        assert!(differs > 0, "no block tells the two orders apart");
     }
 
     #[test]
