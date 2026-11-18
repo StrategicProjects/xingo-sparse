@@ -167,7 +167,8 @@ next.
 
 ## Known limitations
 
-Measured, not guessed (the decision log of the solver records each):
+Measured, not guessed (the decision log of the solver records each). The
+ones that can be closed have an issue.
 
 1. `SupernodalLdl` factorizes the two *regularized* systems with `1×1`
    pivots (they are quasi-definite and need none) and an *unregularized*
@@ -190,7 +191,7 @@ Measured, not guessed (the decision log of the solver records each):
    nonzero entries) is always refused (step M7); a `K` that is singular only
    numerically, with full structural rank, can still be factorized without
    an error: a backward-stable `LBLᵀ` is the exact factor of a nearby
-   nonsingular matrix (see the CHANGELOG of 0.4.0).
+   nonsingular matrix (see the CHANGELOG of 0.4.0; [#1](https://github.com/StrategicProjects/xingo-sparse/issues/1)).
 2. The default regularization (`ρ = 10⁻⁶`, `δ = 10⁻⁸` in the equilibrated
    matrix) was calibrated on the 93 Netlib LPs at three stages of an
    interior-point method (558 systems, plus 3 × 558 with other random
@@ -198,30 +199,32 @@ Measured, not guessed (the decision log of the solver records each):
    the default refinement in all but one case (that one at `1.6·10⁻¹⁰`). A
    running interior-point method will review `ρ, δ`.
 3. Our `Amd` takes about 1.15× the time of faer's AMD (geometric mean on the
-   ten largest Netlib systems), with the same fill. Against METIS's nested
+   ten largest Netlib systems), with the same fill ([#4](https://github.com/StrategicProjects/xingo-sparse/issues/4)). Against METIS's nested
    dissection (`ndmetis` 5.1.0, external tool) its fill is 0.97× on
    average over 40 KKT systems (ten largest Netlib, five Kennington, five
    MIPLIB 2017 root LPs, normal and augmented), from 0.43× to
    1.63× (pds-20's normal equations); no nested dissection is planned
-   unless an interior-point method meets more cases like that one.
-8. `SupernodalLdl<f64, NaiveDense>` (no dependency) factorizes the ten
+   unless an interior-point method meets more cases like that one
+   ([#5](https://github.com/StrategicProjects/xingo-sparse/issues/5)).
+4. `SupernodalLdl<f64, NaiveDense>` (no dependency) factorizes the ten
    largest Netlib systems in 1.37× the time of `FaerLdl` (geometric
    mean; worst 3.3×): the dense kernels are plain blocked loops
-   with no SIMD. With `FaerDense` the ratio is 1.00×.
-4. `FaerLdl`'s count of bumped pivots is exact for the simplicial
+   with no SIMD ([#3](https://github.com/StrategicProjects/xingo-sparse/issues/3)). With `FaerDense` the ratio is 1.00×.
+5. `FaerLdl`'s count of bumped pivots is exact for the simplicial
    structure; for the supernodal one, negative-sign bumps are counted by
    value and may be overcounted (faer counts only the positive ones;
    reported upstream). `SupernodalLdl` counts both signs exactly.
-5. The LU declares singular a column whose entries are all at or below the
+6. The LU declares singular a column whose entries are all at or below the
    absolute pivot tolerance (`10⁻¹⁰`), without scaling; the Harwell–Boeing
-   matrix sherman3 needs `Scaling` first (or a lower `abs_pivot_tol`).
+   matrix sherman3 needs `Scaling` first (or a lower `abs_pivot_tol`;
+   [#2](https://github.com/StrategicProjects/xingo-sparse/issues/2)).
    Refactorization with a reused pivot sequence speeds up dense factors
    less than 1.5× (it saves the analysis, not the arithmetic). The replay
    threshold defaults to the Markowitz threshold `u`; `u/10` is available.
-6. A `KktSolver::solve` allocates once per factor, at its first call (the
+7. A `KktSolver::solve` allocates once per factor, at its first call (the
    lazy initialization of a mutex on macOS); `solve_refined_with` with a
-   reused `RefineWorkspace` allocates nothing afterwards.
-7. `Triplets::to_csc` does not store an entry whose sum is exactly zero
+   reused `RefineWorkspace` allocates nothing afterwards ([#7](https://github.com/StrategicProjects/xingo-sparse/issues/7)).
+8. `Triplets::to_csc` does not store an entry whose sum is exactly zero
    (the containers forbid explicit zeros); zeros are accepted as input.
 
 ## Design notes
