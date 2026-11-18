@@ -10,6 +10,11 @@ on:
     tags: ["v*"]
   pull_request:
 
+# Least privilege; third-party actions are pinned to a commit (the tag is in
+# the comment).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -24,11 +29,11 @@ jobs:
         rust: [stable, "1.90"] # stable and MSRV
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy (default and no default features)

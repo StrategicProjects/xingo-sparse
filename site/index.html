@@ -134,6 +134,9 @@
   .card h3 { margin: 12px 0 6px; font-size: 1.1rem; letter-spacing: -.01em; }
   .card p { margin: 0; color: var(--muted); font-size: .96rem; }
   .card ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: .94rem; }
+  .card ul.cols { columns: 2; column-gap: 32px; margin-top: 12px; }
+  .card ul.cols li { break-inside: avoid; margin-bottom: 4px; }
+  @media (max-width: 860px) { .card ul.cols { columns: 1; } }
 
   .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
   .pill { font: 600 .82rem ui-monospace, monospace; padding: 6px 11px; border-radius: 999px; background: color-mix(in srgb, var(--brand) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent); color: var(--fg); }
@@ -388,10 +391,25 @@ assert!(nnz_l &lt;= s.<span class="c-cmd">cholesky_nnz</span>(&amp;q)?);</code><
     <div class="wrap">
       <h2>Authorship, credits and disclaimer</h2>
       <p class="sub">Who wrote this, whose work it stands on, and what it does not claim.</p>
-      <div class="grid f3">
+      <div class="grid f2">
         <div class="card"><div class="ic">✍️</div><h3>Authorship</h3><p><code>xingo-sparse</code> is written and maintained by <strong>André Leite</strong> as the linear algebra layer of the <a href="https://github.com/StrategicProjects/xingo">Xingó</a> solver, developed at <a href="https://github.com/StrategicProjects">StrategicProjects</a>. To cite it, use the <a href="https://doi.org/10.5281/zenodo.24095312">Zenodo DOI</a> or the repository's <code>CITATION.cff</code>.</p></div>
-        <div class="card"><div class="ic">🙏</div><h3>Credits</h3><p>The algorithms are those of their authors, implemented here from the published papers: Suhl &amp; Suhl (LU for simplex bases), Forrest &amp; Tomlin (basis updates), Gilbert &amp; Peierls and Hall &amp; McKinnon (hypersparse solves), Amestoy, Davis &amp; Duff (AMD), Davis, Gilbert, Larimore &amp; Ng (COLAMD), Liu (elimination trees), Bunch &amp; Kaufman and Duff &amp; Reid (symmetric indefinite pivoting, delayed pivots, MA57), Altman &amp; Gondzio and Arioli, Duff, Gratton &amp; Pralet (regularization and refinement). <a href="https://highs.dev">HiGHS</a>, <a href="https://github.com/DrTimothyAldenDavis/SuiteSparse">SuiteSparse</a> (AMD, COLAMD, CHOLMOD) and <a href="https://crates.io/crates/faer">faer</a> were studied as references and used as oracles in the tests; faer (MIT) is also the optional dense-kernel dependency. Each chapter of the sources lists its references.</p></div>
         <div class="card"><div class="ic">⚖️</div><h3>Disclaimer</h3><p>This is an independent project. It is not affiliated with, maintained by or endorsed by the HiGHS, SuiteSparse, HSL or faer authors, and includes no code from them (faer is linked only through the optional <code>faer</code> feature). All names and trademarks belong to their owners. The software is provided "as is", without warranty of any kind, under the terms of the MIT and Apache-2.0 licenses.</p></div>
+      </div>
+      <div class="grid" style="margin-top:18px">
+        <div class="card"><div class="ic">🙏</div><h3>Credits</h3><p>The algorithms are those of their authors, implemented here from the published papers. Each chapter of the sources lists its references.</p>
+          <ul class="cols">
+            <li><strong>Suhl &amp; Suhl</strong> — LU for simplex bases</li>
+            <li><strong>Forrest &amp; Tomlin</strong> — basis updates</li>
+            <li><strong>Gilbert &amp; Peierls</strong> and <strong>Hall &amp; McKinnon</strong> — hypersparse solves</li>
+            <li><strong>Amestoy, Davis &amp; Duff</strong> — AMD</li>
+            <li><strong>Davis, Gilbert, Larimore &amp; Ng</strong> — COLAMD</li>
+            <li><strong>Liu</strong> — elimination trees</li>
+            <li><strong>Bunch &amp; Kaufman</strong> and <strong>Duff &amp; Reid</strong> — symmetric indefinite pivoting, delayed pivots, MA57</li>
+            <li><strong>Altman &amp; Gondzio</strong> and <strong>Arioli, Duff, Gratton &amp; Pralet</strong> — regularization and refinement</li>
+            <li><a href="https://highs.dev">HiGHS</a> and <a href="https://github.com/DrTimothyAldenDavis/SuiteSparse">SuiteSparse</a> (AMD, COLAMD, CHOLMOD) — studied as references and used as oracles in the tests</li>
+            <li><a href="https://crates.io/crates/faer">faer</a> (MIT) — reference, test oracle and the optional dense-kernel dependency</li>
+          </ul>
+        </div>
       </div>
     </div>
   </section>
