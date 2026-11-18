@@ -5,6 +5,17 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [0.4.1] — 2026-11-18
+
+### Changed
+
+* Documentation only: in the README (and the landing page) each known
+  limitation that can be closed links to its issue in the repository, and
+  the list is numbered in order; the section "Authorship, credits and
+  disclaimer" of the page lists the credits one per line. The workflows of
+  the mirror pin third-party actions to a commit and give the build job
+  read-only permissions. No change to the code.
+
 ## [0.4.0] — 2026-11-17
 
 Scalars other than `f64` (task L1.8 of the Xingó plan, D-0113): the
@@ -290,6 +301,8 @@ the LU's absolute pivot tolerance declares unscaled tiny columns singular;
 `solve` allocates once per factor on first use; `Triplets::to_csc` does
 not store exact-zero sums.
 
+[0.4.1]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.4.1
+[0.4.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.4.0
 [0.3.2]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.2
 [0.3.1]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.3.0
