@@ -186,6 +186,11 @@ Measured, not guessed (the decision log of the solver records each):
    pivots in one system); the regularized path, which a running method
    should use there, is untouched bit for bit. `FaerLdl`'s intranodal
    Bunch–Kaufman has no delays and fails on 246 of the 279 systems.
+   Since 0.4.0 a *structurally* singular `K` (no perfect matching on its
+   nonzero entries) is always refused (step M7); a `K` that is singular only
+   numerically, with full structural rank, can still be factorized without
+   an error: a backward-stable `LBLᵀ` is the exact factor of a nearby
+   nonsingular matrix (see the CHANGELOG of 0.4.0).
 2. The default regularization (`ρ = 10⁻⁶`, `δ = 10⁻⁸` in the equilibrated
    matrix) was calibrated on the 93 Netlib LPs at three stages of an
    interior-point method (558 systems, plus 3 × 558 with other random
