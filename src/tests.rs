@@ -1712,10 +1712,10 @@ proptest! {
             .map(|_| 2f64.powi(i32::try_from(rng.below(121)).unwrap() - 60))
             .collect();
         let mut ad = a.clone();
-        for j in 0..ad.n_cols() {
+        for (j, &dj) in d.iter().enumerate() {
             let (start, end) = (ad.col_ptr[j], ad.col_ptr[j + 1]);
             for v in &mut ad.val[start..end] {
-                *v *= d[j];
+                *v *= dj;
             }
         }
         let scale_of = |c: &ColumnRef| match c {
