@@ -315,8 +315,10 @@ pub struct LuOptions {
     /// after a tiny pivot — the ones the limit is meant to refuse). A
     /// simplex method that protects itself otherwise (the ratio test, a
     /// comparison of the pivot column and row) may prefer
-    /// `f64::INFINITY`: `xingo-simplex` does, since `10⁶` would refuse
-    /// updates on 7 of the 93 Netlib problems.
+    /// `f64::INFINITY`. `xingo-simplex` uses the default since its task
+    /// M01: on the 93 Netlib problems `10⁶` refuses 75 updates on 6 of
+    /// them, at 1.7 % more refactorizations, with the same answers and
+    /// fewer refreshes forced by its residual check.
     pub update_multiplier_limit: f64,
 }
 
