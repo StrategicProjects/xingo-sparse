@@ -47,7 +47,9 @@
 //!     fall back to Algorithm L. Validate the source (invariant (B1)).
 //! R2. [Scatter.] For `s = 0, 1, …, m − 1`: let `q = q_s`, `p = p_s`;
 //!     scatter column `q` of `B` into the dense row-indexed work vector `x`
-//!     and its rows into the pattern `X`.
+//!     and its rows into the pattern `X`; with `TolScale::Column`, form
+//!     `β_q` and the column tolerances `τ_q`, `ε_q` of Chapter 5.3
+//!     (`τ_abs`, `ε_drop` with the default `TolScale::Absolute`).
 //! R3. [Reach.] Find the set of rows reachable from `X` in `G_L` by depth-
 //!     first search; it joins `X`. The pivoted rows with an `L` column, in
 //!     reverse postorder of the search, are a topological order of the
@@ -57,12 +59,12 @@
 //!     `r`) is the entry `u_{r q}` of `U`, and `x_i` (active `i`) is the
 //!     entry `s_iq` of the Schur complement that Algorithm L would have
 //!     seen when pivoting column `q`.
-//! R5. [Test.] Let `γ = max_{i active} |x_i|`. If `|x_p| ≤ τ_abs`, or `s ≥ σ`
+//! R5. [Test.] Let `γ = max_{i active} |x_i|`. If `|x_p| ≤ τ_q`, or `s ≥ σ`
 //!     and `|x_p| < u_R γ` (by default `u_R = u`, Markowitz's threshold of
 //!     Chapter 5.3; the singleton steps keep the rule of L3–L4: forced
 //!     pivots, no relative test), fall back to Algorithm L.
-//! R6. [Record.] `u_pq ← x_p`; for each pivoted `r ∈ X` with `|x_r| > ε_drop`
-//!     record `u_rq = x_r`; for each active `i ≠ p` with `|x_i| > ε_drop`
+//! R6. [Record.] `u_pq ← x_p`; for each pivoted `r ∈ X` with `|x_r| > ε_q`
+//!     record `u_rq = x_r`; for each active `i ≠ p` with `|x_i| > ε_q`
 //!     record `l_is = x_i / x_p` (the `L` column of step `s`, pivot row
 //!     `p`). Clear `x` on `X`; row `p` is pivoted.
 //! R7. [Finish.] Step L7 of Chapter 5.3 on the result (the statistics of
@@ -119,7 +121,7 @@
 
 use crate::basis::ColumnSource;
 use crate::error::LuError;
-use crate::factor::{Elim, LuOptions, idx32};
+use crate::factor::{Elim, LuOptions, TolScale, idx32};
 use crate::real::{Real, is_exact_zero, is_zero, lt};
 use crate::solve::NO_ETA;
 use crate::store::NIL;
@@ -197,6 +199,7 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
     let abs_tol = T::from_f64(opts.abs_pivot_tol);
     let rel_tol = T::from_f64(rel_tol);
     let drop_tol = T::from_f64(opts.drop_tol);
+    let column = opts.tol_scale == TolScale::Column;
     let mut e = Elim {
         nnz_basis: 0,
         max_basis: T::ZERO,
@@ -230,6 +233,7 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
         }
         // R2. Scatter.
         pat.clear();
+        let mut beta = T::ZERO;
         cols.for_each_entry(q, |i, v| {
             let iu = i as usize;
             if in_pat[iu] != s {
@@ -239,7 +243,15 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
             x[iu] += v;
             e.nnz_basis += 1;
             e.max_basis = e.max_basis.max(v.abs());
+            if column {
+                beta = beta.max(v.abs());
+            }
         });
+        let (tau, eps) = if column {
+            (abs_tol * beta, drop_tol * beta)
+        } else {
+            (abs_tol, drop_tol)
+        };
         // R3. Reach in G_L, by depth-first search from every seed.
         post.clear();
         let eta_start = |r: usize, eta_of_row: &[u32], l_start: &[usize]| match eta_of_row[r] {
@@ -295,8 +307,7 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
             .iter()
             .filter(|&&i| row_step[i as usize] == NIL)
             .fold(T::ZERO, |g, &i| g.max(x[i as usize].abs()));
-        let refused =
-            !lt(abs_tol, xp.abs()) || (s >= sym.singletons && lt(xp.abs(), rel_tol * gamma));
+        let refused = !lt(tau, xp.abs()) || (s >= sym.singletons && lt(xp.abs(), rel_tol * gamma));
         if refused {
             return None;
         }
@@ -308,7 +319,7 @@ fn eliminate_fixed<T: Real, C: ColumnSource<T>>(
             let iu = i as usize;
             let v = x[iu];
             x[iu] = T::ZERO;
-            if is_zero(v, drop_tol) || iu == p {
+            if is_zero(v, eps) || iu == p {
                 continue;
             }
             if row_step[iu] == NIL {

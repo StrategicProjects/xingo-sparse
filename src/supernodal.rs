@@ -504,7 +504,11 @@
 //!      `R_d[b..] ⊆ R_s`.
 //! (L5) [`KktSolver::solve`] allocates nothing (its work vector belongs to
 //!      the factor) and reads the factor only — on the kernel path of S0′
-//!      too (the gather area is part of the work vector).
+//!      too (the gather area is part of the work vector), and from the
+//!      first call: the mutex around the work vector is primed (locked and
+//!      released once) by the factorization and by a clone, because where
+//!      the standard library's mutex is a lazily boxed `pthread_mutex_t`
+//!      (macOS) the box is allocated at the first lock (issue #7).
 //! (L6) The factorization is a deterministic function of its inputs:
 //!      no threads, no hashing, the same operations in the same order —
 //!      two factorizations of the same matrix are equal bit for bit.
@@ -526,9 +530,10 @@
 //!      `cancelled_updates_on_the_kernel_path_are_a_zero_pivot`).
 //! (S6), (S10) as in Chapter 5.14, checked in steps N4–N5 and asserted in
 //!      debug builds. [`SymbolicLdl::check_invariants`] checks (L1)–(L4);
-//!      the L1.6a harness checks (L5) with a counting allocator (0
-//!      allocations in a second solve and in a refined solve with a reused
-//!      workspace), the tests check (L6) by comparing two factors.
+//!      the test `kkt_no_alloc` checks (L5) with a counting allocator (0
+//!      allocations in the first and the second solve, with a clone of
+//!      the factor, and in a refined solve with a reused workspace), the
+//!      tests check (L6) by comparing two factors.
 //!
 //! ## What was read
 //! CHOLMOD (Chen, Davis, Hager & Rajamanickam 2008: §2.2 analyze, §2.3
@@ -910,7 +915,18 @@ impl<T: Real> SolveScratch<T> {
     /// `N + max_s n_r(s)` zeros.
     fn new(n: usize, blocks: &[DenseBlock<T>]) -> Self {
         let rows = blocks.iter().map(|b| b.rows).max().unwrap_or(0);
-        Self(Mutex::new(vec![T::ZERO; n + rows]))
+        Self::primed(vec![T::ZERO; n + rows])
+    }
+}
+
+impl<T> SolveScratch<T> {
+    /// `v` behind a mutex already locked and released once (L5): the
+    /// first solve does not allocate the lazily boxed mutex of the
+    /// targets without futexes.
+    fn primed(v: Vec<T>) -> Self {
+        let m = Mutex::new(v);
+        drop(m.try_lock());
+        Self(m)
     }
 }
 
@@ -927,7 +943,7 @@ impl<T: Clone> Clone for SolveScratch<T> {
             Ok(g) => g.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
-        Self(Mutex::new(v))
+        Self::primed(v)
     }
 }
 

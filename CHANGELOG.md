@@ -5,6 +5,44 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [Unreleased]
+
+### Added
+
+* `LuOptions::tol_scale: TolScale` (issue
+  [#2](https://github.com/StrategicProjects/xingo-sparse/issues/2)): the
+  scale against which the factorization (Algorithms L, L5′ and R) measures
+  `abs_pivot_tol` and `drop_tol`. `TolScale::Absolute`, the default, is
+  the behaviour of 0.4.1 bit for bit. `TolScale::Column` multiplies both
+  tolerances, column by column, by the largest magnitude of the column of
+  `B`: a nonsingular matrix with tiny columns (sherman3's shape)
+  factorizes without scaling, a column that cancels to rounding noise is
+  singular whatever its magnitude, and scaling the columns by powers of
+  two changes the factor only by that scaling (invariant (O2) of Chapter
+  5.3, a property test). The Forrest–Tomlin update and the solves are
+  unchanged; badly scaled rows still need `Scaling`.
+
+### Changed
+
+* `LuOptions` has one more public field: a struct literal without
+  `..LuOptions::default()` no longer compiles (a breaking change; the
+  next version is 0.5.0).
+
+### Fixed
+
+* `KktSolver::solve` allocates nothing from its first call on a factor
+  (issue [#7](https://github.com/StrategicProjects/xingo-sparse/issues/7)):
+  where the standard library's mutex is a lazily boxed `pthread_mutex_t`
+  (macOS), the first lock of the mutex around a factor's solve buffer
+  allocated its box. The factorization (and `Clone` of a `NumericLdl`)
+  now takes and releases that lock once, so the box is allocated there.
+  No public signature and no result changes. The new test
+  `tests/kkt_no_alloc.rs` counts allocations (a counting global
+  allocator, the only `unsafe` of the crate's tests) and checks the first
+  solve, a second one, a solve with a clone of the factor and a refined
+  solve with a reused `RefineWorkspace`, for `SupernodalLdl` and
+  `FaerLdl`.
+
 ## [0.4.1] — 2026-11-18
 
 ### Changed

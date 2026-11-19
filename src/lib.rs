@@ -279,7 +279,7 @@ pub use csr::CsrMatrix;
 pub use dense::FaerDense;
 pub use dense::{DenseBlock, DenseKernel, NaiveDense};
 pub use error::{DenseError, KktError, LuError, SparseError};
-pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder};
+pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder, TolScale};
 #[cfg(feature = "faer")]
 pub use faer_ldl::{FaerLdl, FaerNumeric, FaerSymbolic};
 pub use index::{Col, Row};

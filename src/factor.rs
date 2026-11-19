@@ -37,8 +37,18 @@
 //! candidate pivot is `(r_i − 1)(c_j − 1)`, an upper bound on the fill it
 //! creates. With the threshold `u` ([`LuOptions::rel_pivot_tol`] `∈ (0,
 //! 1]`), an entry is *acceptable* iff `|s_ij| ≥ u · max_k |s_kj|` and
-//! `|s_ij| > τ_abs` ([`LuOptions::abs_pivot_tol`]). Entries of magnitude
-//! at most `ε_drop` ([`LuOptions::drop_tol`]) are negligible.
+//! `|s_ij| > τ_j`. Entries of column `j` of magnitude at most `ε_j` are
+//! negligible. The two column tolerances come from the absolute pivot
+//! tolerance `τ_abs` ([`LuOptions::abs_pivot_tol`]) and the drop
+//! tolerance `ε_drop` ([`LuOptions::drop_tol`]) by the *scale of the
+//! tolerances* ([`LuOptions::tol_scale`]): with `β_j = max_i |b_ij|`, the
+//! largest magnitude of column `j` of `B` as the source gives it,
+//! ```text
+//!   TolScale::Absolute (the default):  τ_j = τ_abs,       ε_j = ε_drop;
+//!   TolScale::Column:                  τ_j = τ_abs · β_j, ε_j = ε_drop · β_j.
+//! ```
+//! (Section "The scale of the tolerances" below; before issue #2 there was
+//! only the absolute scale, and the default keeps it.)
 //!
 //! ## Algorithm L (LU factorization of a simplex basis)
 //! Given the columns of `B` through a [`crate::ColumnSource`] (in the
@@ -46,16 +56,17 @@
 //!
 //! L1. [Load.] Validate the source (Chapter 5.1, B1). Build `S = B` in
 //!     a column file with values and a row file with the pattern only;
-//!     record `nnz(B)` and `max |b_ij|`. Bucket columns and rows by count.
+//!     record `nnz(B)` and `max |b_ij|`; with `TolScale::Column`, record
+//!     `τ_j` and `ε_j` from `β_j`. Bucket columns and rows by count.
 //! L2. [Empty columns.] Every active column with `c_j = 0` is *dead*: it
 //!     can never be pivoted. Remove it (its position joins the deficiency
 //!     list).
 //! L3. [Column singleton.] If some column `j` has `c_j = 1`, with entry
-//!     `(i, v)`: if `|v| > τ_abs` pivot on `(i, j)` (step L6) — the `L`
+//!     `(i, v)`: if `|v| > τ_j` pivot on `(i, j)` (step L6) — the `L`
 //!     column of this step is empty and row `i` is copied to `U` — else
 //!     declare `j` dead. Go to L2.
 //! L4. [Row singleton.] Otherwise, if some row `i` with `r_i = 1` has its
-//!     only entry `(i, j)` above `τ_abs`, pivot on it (step L6) — the `U` row
+//!     only entry `(i, j)` above `τ_j`, pivot on it (step L6) — the `U` row
 //!     is empty, the multipliers `s_kj / s_ij` form the `L` column, and no
 //!     entry of `S` is updated. Go to L2. Steps L3–L4 constitute the
 //!     *triangular phase*: no arithmetic beyond one division per `L` entry.
@@ -71,7 +82,7 @@
 //!     COLAMD order (Chapter 5.10, Algorithm C) of the columns of the bump
 //!     on its pattern; for each column `c` in that order that is still
 //!     active (after removing the empty columns as in L2): if `γ_c =
-//!     max_i |s_ic| ≤ τ_abs` declare `c` dead; otherwise pivot (step L6) on
+//!     max_i |s_ic| ≤ τ_c` declare `c` dead; otherwise pivot (step L6) on
 //!     the acceptable entry `(i, c)` of least row count `r_i` (ties: the
 //!     larger `|s_ic|`, then the first in the column) — threshold partial
 //!     pivoting inside a fixed column order, as UMFPACK and SuperLU do.
@@ -85,7 +96,7 @@
 //!     the `L` column (one pass over column `j` against a map of those
 //!     rows) and set `s_ij ← s_ij − l_ic u_pj` for every `i` of the `L`
 //!     column, in its order, appending fill-in to both files; entries that
-//!     cancel to `|s_ij| ≤ ε_drop` are dropped, in the order of column `j`.
+//!     cancel to `|s_ij| ≤ ε_j` are dropped, in the order of column `j`.
 //!     Only the entries just updated or filled can cancel — plus, the first
 //!     time column `j` is updated, entries of `B` that were negligible from
 //!     the start, so such a column is scanned whole once. Update the counts
@@ -108,7 +119,7 @@
 //!
 //! M1. For `k = 1, 2, …, m`:
 //! M2. [Columns of count `k`.] For each active column `j` with `c_j = k`:
-//!     compute `γ_j = max_i |s_ij|`; if `γ_j ≤ τ_abs`, mark `j` dead and go
+//!     compute `γ_j = max_i |s_ij|`; if `γ_j ≤ τ_j`, mark `j` dead and go
 //!     on. Otherwise evaluate every acceptable entry with merit
 //!     `(r_i − 1)(k − 1)`. Every unexamined candidate now lies in a row with
 //!     `r_i ≥ k` (rows of smaller count were examined whole) and a column
@@ -205,6 +216,69 @@
 //!      `for_scalar::<T>()` differs from the default in the three fields
 //!      of P1 only, each exactly `ρ_T` times the default. Tested.
 //!
+//! [`LuOptions::tol_scale`] is structure (P2): `for_scalar` keeps it, and
+//! with `TolScale::Column` the products `τ_abs · β_j`, `ε_drop · β_j` are
+//! formed in `T` from the scaled `τ_abs`, `ε_drop` of P1.
+//!
+//! ## The scale of the tolerances (issue #2)
+//! `τ_abs` and `ε_drop` are magnitudes in the units of `B`. A matrix
+//! whose columns differ by many orders of magnitude meets them at the
+//! wrong places: the Harwell–Boeing matrix sherman3 has 2 107 of its
+//! 5 005 columns with `β_j = 10⁻¹⁰` (inactive cells of a reservoir model)
+//! and is declared singular with rank deficiency 2 107, although it is
+//! not (SuperLU, which has no absolute test, factorizes it); and a column
+//! with `β_j = 10⁸` that cancels to rounding noise, `≈ 10⁸ ε₆₄ ≈ 10⁻⁸`,
+//! passes `τ_abs = 10⁻¹⁰` and becomes a pivot.
+//!
+//! The elimination keeps the scale of every column: step L6 changes
+//! column `j` only by `l_ic u_pj`, where the multiplier `l_ic` is a
+//! quotient of two entries of column `c` and `u_pj` an entry of column
+//! `j`. So if `B` is replaced by `B D` with `D = diag(d_j)`, every `s_ij`
+//! that Algorithm L ever forms is multiplied by `d_j`, every `l_ic` is
+//! unchanged, and so are the relative tests (`u`, and the ratios that
+//! break ties in Algorithm M). With `TolScale::Column` the absolute tests
+//! scale too (`τ_j`, `ε_j` and every quantity they are compared with are
+//! multiplied by `d_j`), so the factorization does not depend on the
+//! scaling of the columns at all; for powers of two this is exact:
+//!
+//! (O2) With `TolScale::Column` and `D` a diagonal of powers of two
+//!      (with no overflow or underflow), Algorithms L, L5′ and R on `B D`
+//!      take the same pivots, find the same dead columns, and produce the
+//!      same `L` and `U D`, bit for bit; FTRAN with `B D` returns `D⁻¹`
+//!      times FTRAN with `B`. Tested.
+//!
+//! Hence, with `TolScale::Column`: a column is dead only when it is
+//! negligible *relative to its own magnitude in `B`* — an exactly
+//! singular basis (an empty column, an exact cancellation, a structurally
+//! dependent set) is singular in both scales, a numerically singular one
+//! (a column that cancels to `≤ τ_abs β_j`) is singular whatever the
+//! magnitude of the column, and tiny columns like sherman3's are pivoted
+//! (measured on a synthetic matrix of that shape, `tests.rs`; sherman3
+//! itself is not in the repository). The
+//! drop tolerance must follow: with `τ_j` relative and `ε_drop` absolute,
+//! a matrix with `β_j ≈ 10⁻¹²` would be accepted and its updates dropped
+//! as noise (measured: backward error `8·10⁻²` instead of `3·10⁻¹⁰`).
+//!
+//! What it does not do. (1) It does not touch the rows: in `R B` with
+//! `R` diagonal the column maxima mix the `r_i`, and a matrix whose
+//! *rows* are badly scaled stays singular or inaccurate; equilibrate it
+//! first ([`crate::Scaling`]). The two compose: after a power-of-two
+//! scaling `R B C`, `TolScale::Column` gives the factor of `R B` with the
+//! columns of `C` (O2), so the scaling only has to fix the rows. (2) The
+//! Forrest–Tomlin update (Chapter 5.5) and the solves keep their tests
+//! unchanged (the update's singularity test, U4, is already relative to
+//! `max(ζ, 1)`). (3) The default stays `TolScale::Absolute`: with it no
+//! `β_j` is formed and Algorithms L and R run the same operations as
+//! before the option existed, so every factor of `0.4` is reproduced bit
+//! for bit (on the 93 Netlib problems through `xingo-simplex`, the same
+//! 93 optimal answers and the same 141 209 iterations). Measured with
+//! `TolScale::Column` in the simplex method instead (issue #2, a pilot
+//! with the scaled computational form): 93 optimal, 141 154 iterations,
+//! the path changing on pilot, pilot.ja and pilot87 only; with `τ_j`
+//! relative and `ε_drop` absolute, 141 209 — the simplex bases, already
+//! scaled, never meet the singularity test where the scales differ, and
+//! the relative drop tolerance is what changes those three paths.
+//!
 //! ## Complexity
 //! The triangular phase costs `O(nnz(B))` plus one division per `L` entry.
 //! A Markowitz pivot costs `O(Σ_j c_j)` over the columns of its `U` row,
@@ -243,7 +317,8 @@ pub struct LuOptions {
     /// Absolute pivot tolerance `τ_abs`: no pivot of magnitude at or below
     /// it is accepted, in the factorization or in an update (`1e-10`).
     ///
-    /// Absolute, in the units of `B`: an unscaled matrix whose columns
+    /// Absolute, in the units of `B`, with the default
+    /// [`LuOptions::tol_scale`]: an unscaled matrix whose columns
     /// hold only tiny entries is declared singular. The Harwell–Boeing
     /// matrix sherman3 has 2 107 of its 5 005 columns with largest entry
     /// `10⁻¹⁰` (inactive cells of a reservoir model) and is reported with
@@ -251,9 +326,10 @@ pub struct LuOptions {
     /// threshold, factorizes it. Scale first ([`crate::Scaling`]: with
     /// `Geometric { max_iters: 4, power_of_two: true }` it factorizes with
     /// the defaults, residual `5·10⁻¹²`), or lower `τ_abs` (`10⁻¹²`:
-    /// residual `7·10⁻¹⁷`; task L1.5b, D9). The simplex method scales its
-    /// computational form when it is badly scaled (`ScaleMode::Auto`,
-    /// Chapter 6.9) before it factorizes.
+    /// residual `7·10⁻¹⁷`; task L1.5b, D9), or measure the tolerance
+    /// against each column ([`TolScale::Column`]). The simplex method
+    /// scales its computational form when it is badly scaled
+    /// (`ScaleMode::Auto`, Chapter 6.9) before it factorizes.
     pub abs_pivot_tol: f64,
     /// Relative threshold `u ∈ (0, 1]` of Markowitz threshold pivoting
     /// (`1e-2`; the solver's `Tolerances::markowitz`).
@@ -320,6 +396,31 @@ pub struct LuOptions {
     /// them, at 1.7 % more refactorizations, with the same answers and
     /// fewer refreshes forced by its residual check.
     pub update_multiplier_limit: f64,
+    /// The scale against which the factorization (Algorithms L and R)
+    /// measures `abs_pivot_tol` and `drop_tol` (`TolScale::Absolute`, the
+    /// behaviour of every earlier version). With [`TolScale::Column`] the
+    /// two tolerances are multiplied, column by column, by the largest
+    /// magnitude of the column of `B`, and the factorization does not
+    /// depend on the scaling of the columns (invariant (O2) of the
+    /// module documentation, "The scale of the tolerances"). The
+    /// Forrest–Tomlin update and the solves are not affected. Structure,
+    /// not noise: [`LuOptions::for_scalar`] keeps it (Rule P, P2).
+    pub tol_scale: TolScale,
+}
+
+/// The scale of the absolute pivot tolerance and of the drop tolerance
+/// in the factorization ([`LuOptions::tol_scale`]; issue #2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TolScale {
+    /// In the units of `B`: `τ_j = τ_abs`, `ε_j = ε_drop` (the default;
+    /// the behaviour of every earlier version, bit for bit).
+    #[default]
+    Absolute,
+    /// Relative to each column of `B`: `τ_j = τ_abs · β_j`,
+    /// `ε_j = ε_drop · β_j` with `β_j = max_i |b_ij|`. Invariant under
+    /// the scaling of the columns (exactly, for powers of two); does not
+    /// fix badly scaled rows (use [`crate::Scaling`] for those).
+    Column,
 }
 
 /// Column pre-orders available to the dynamic LU ([`Lu::set_pre_order`];
@@ -348,6 +449,7 @@ impl Default for LuOptions {
             hyper_result_density: 0.10,
             drop_tol: 1e-12,
             update_multiplier_limit: MULT_DEFAULT,
+            tol_scale: TolScale::Absolute,
         }
     }
 }
@@ -1044,6 +1146,10 @@ struct Kernel<T: Real> {
     rel_tol: T,
     drop_tol: T,
     search_limit: usize,
+    /// `τ_j` and `ε_j` of every column with `TolScale::Column` (empty with
+    /// `TolScale::Absolute`, where they are `abs_tol` and `drop_tol`).
+    col_tau: Vec<T>,
+    col_eps: Vec<T>,
     /// Column file: line `j` holds `(i, s_ij)`, linked to `rows`
     /// (Chapter 5.2, Algorithm T).
     cols: LineStore<T>,
@@ -1121,6 +1227,7 @@ impl<T: Real> Kernel<T> {
     /// Step L1.
     fn load<C: ColumnSource<T>>(basis: &C, opts: LuOptions) -> Self {
         let m = basis.m();
+        let abs_tol = T::from_f64(opts.abs_pivot_tol);
         let drop_tol = T::from_f64(opts.drop_tol);
         let mut col_len = vec![0_usize; m];
         let mut row_len = vec![0_usize; m];
@@ -1130,14 +1237,26 @@ impl<T: Real> Kernel<T> {
                 row_len[i as usize] += 1;
             });
         }
+        // τ_j and ε_j from β_j (TolScale::Column only).
+        let (col_tau, col_eps): (Vec<T>, Vec<T>) = match opts.tol_scale {
+            TolScale::Absolute => (Vec::new(), Vec::new()),
+            TolScale::Column => (0..m)
+                .map(|k| {
+                    let mut beta = T::ZERO;
+                    basis.for_each_entry(k, |_, v| beta = beta.max(v.abs()));
+                    (abs_tol * beta, drop_tol * beta)
+                })
+                .unzip(),
+        };
         let caps = |v: &[usize]| v.iter().map(|&n| n + 4).collect::<Vec<_>>();
         let mut cols = LineStore::new_linked(&caps(&col_len));
         let mut rows = LineStore::new_pattern_linked(&caps(&row_len));
         let mut max_basis = T::ZERO;
         let mut tiny = vec![false; m];
         for (k, tiny_k) in tiny.iter_mut().enumerate() {
+            let eps_k = col_eps.get(k).copied().unwrap_or(drop_tol);
             basis.for_each_entry(k, |i, v| {
-                *tiny_k |= is_zero(v, drop_tol);
+                *tiny_k |= is_zero(v, eps_k);
                 let (q, r) = (cols.len(k), rows.len(i as usize));
                 cols.push_linked(k, i, v, r);
                 rows.push_linked(i as usize, idx32(k), T::ZERO, q);
@@ -1155,10 +1274,12 @@ impl<T: Real> Kernel<T> {
         }
         Self {
             m,
-            abs_tol: T::from_f64(opts.abs_pivot_tol),
+            abs_tol,
             rel_tol: T::from_f64(opts.rel_pivot_tol),
             drop_tol,
             search_limit: opts.search_limit,
+            col_tau,
+            col_eps,
             nnz_basis: cols.live(),
             cols,
             rows,
@@ -1221,7 +1342,7 @@ impl<T: Real> Kernel<T> {
                 .1
                 .iter()
                 .fold(T::ZERO, |g, &v| g.max(v.abs()));
-            if !self.above_abs(gamma) {
+            if !self.above_tau(c, gamma) {
                 self.kill(c);
                 continue;
             }
@@ -1230,7 +1351,7 @@ impl<T: Real> Kernel<T> {
             let (idx, val) = self.cols.line(c);
             for (&i, &v) in idx.iter().zip(val) {
                 let (i, a) = (i as usize, v.abs());
-                if !self.above_abs(v) || lt(a, u * gamma) {
+                if !self.above_tau(c, v) || lt(a, u * gamma) {
                     continue;
                 }
                 let r = self.rows.len(i);
@@ -1290,10 +1411,25 @@ impl<T: Real> Kernel<T> {
         perm.fwd.iter().map(|&k| active[k as usize]).collect()
     }
 
-    /// `|v| > τ_abs`.
+    /// `|v| > τ_j` for an entry (or the maximum) of column `j`.
     #[inline]
-    fn above_abs(&self, v: T) -> bool {
-        lt(self.abs_tol, v.abs())
+    fn above_tau(&self, j: usize, v: T) -> bool {
+        let tau = if self.col_tau.is_empty() {
+            self.abs_tol
+        } else {
+            self.col_tau[j]
+        };
+        lt(tau, v.abs())
+    }
+
+    /// `ε_j`, the drop tolerance of column `j`.
+    #[inline]
+    fn eps(&self, j: usize) -> T {
+        if self.col_eps.is_empty() {
+            self.drop_tol
+        } else {
+            self.col_eps[j]
+        }
     }
 
     /// `s_ij` for the entry at position `r` of row `i` (through its link).
@@ -1349,7 +1485,7 @@ impl<T: Real> Kernel<T> {
             if let Some(j) = self.col_lists.first(1) {
                 let (idx, val) = self.cols.line(j);
                 let (i, v) = (idx[0] as usize, val[0]);
-                if self.above_abs(v) {
+                if self.above_tau(j, v) {
                     self.pivot(i, j);
                     self.col_singletons += 1;
                 } else {
@@ -1357,13 +1493,13 @@ impl<T: Real> Kernel<T> {
                 }
                 continue;
             }
-            // L4. Row singleton with a pivot above τ_abs.
+            // L4. Row singleton with a pivot above τ_j.
             let mut found = None;
             let mut e = self.row_lists.first(1);
             while let Some(i) = e {
                 let j = self.rows.index_at(i, 0) as usize;
                 let v = self.value_in_row(i, 0);
-                if self.above_abs(v) {
+                if self.above_tau(j, v) {
                     found = Some((i, j));
                     break;
                 }
@@ -1421,21 +1557,21 @@ impl<T: Real> Kernel<T> {
                 .iter()
                 .fold(T::ZERO, |g, &v| g.max(v.abs()))
         };
-        let acceptable = |v: T, gamma: T| self.above_abs(v) && !lt(v.abs(), u * gamma);
+        let acceptable = |j: usize, v: T, gamma: T| self.above_tau(j, v) && !lt(v.abs(), u * gamma);
         for k in 1..=self.m {
             // M2. Columns of count k.
             let mut e = self.col_lists.first(k);
             while let Some(j) = e {
                 e = self.col_lists.next(j);
                 let gamma = col_max(j);
-                if !self.above_abs(gamma) {
+                if !self.above_tau(j, gamma) {
                     dead.push(j);
                     continue;
                 }
                 let mut any = false;
                 let (idx, val) = self.cols.line(j);
                 for (&i, &v) in idx.iter().zip(val) {
-                    if acceptable(v, gamma) {
+                    if acceptable(j, v, gamma) {
                         any = true;
                         let i = i as usize;
                         let c = Candidate {
@@ -1465,7 +1601,7 @@ impl<T: Real> Kernel<T> {
                     let j = j as usize;
                     let gamma = col_max(j);
                     let v = self.value_in_row(i, r);
-                    if acceptable(v, gamma) {
+                    if acceptable(j, v, gamma) {
                         any = true;
                         let c = Candidate {
                             i,
@@ -1527,6 +1663,7 @@ impl<T: Real> Kernel<T> {
         // just updated or filled can have become negligible, besides
         // negligible entries of B itself in a column never scanned.
         cancelled.clear();
+        let eps = self.eps(j);
         if self.tiny[j] {
             self.tiny[j] = false;
             let (idx, val) = self.cols.line(j);
@@ -1534,12 +1671,12 @@ impl<T: Real> Kernel<T> {
                 idx.iter()
                     .zip(val)
                     .enumerate()
-                    .filter(|&(_, (_, &v))| is_zero(v, self.drop_tol))
+                    .filter(|&(_, (_, &v))| is_zero(v, eps))
                     .map(|(q, (&i, _))| (q, i)),
             );
         } else {
             for (k, &(i, _)) in lcol.iter().enumerate() {
-                if is_zero(self.cols.value_at(j, lq[k]), self.drop_tol) {
+                if is_zero(self.cols.value_at(j, lq[k]), eps) {
                     cancelled.push((lq[k], i));
                 }
             }

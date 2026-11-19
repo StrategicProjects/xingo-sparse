@@ -214,17 +214,17 @@ ones that can be closed have an issue.
    structure; for the supernodal one, negative-sign bumps are counted by
    value and may be overcounted (faer counts only the positive ones;
    reported upstream). `SupernodalLdl` counts both signs exactly.
-6. The LU declares singular a column whose entries are all at or below the
-   absolute pivot tolerance (`10⁻¹⁰`), without scaling; the Harwell–Boeing
-   matrix sherman3 needs `Scaling` first (or a lower `abs_pivot_tol`;
-   [#2](https://github.com/StrategicProjects/xingo-sparse/issues/2)).
+6. By default the LU measures its pivot and drop tolerances in the units
+   of the matrix, so it declares singular a column whose entries are all
+   at or below `10⁻¹⁰` (the Harwell–Boeing matrix sherman3); set
+   `LuOptions::tol_scale = TolScale::Column` to measure them against each
+   column (the factorization then does not depend on the scaling of the
+   columns), or scale first. Badly scaled *rows* still need `Scaling`
+   ([#2](https://github.com/StrategicProjects/xingo-sparse/issues/2)).
    Refactorization with a reused pivot sequence speeds up dense factors
    less than 1.5× (it saves the analysis, not the arithmetic). The replay
    threshold defaults to the Markowitz threshold `u`; `u/10` is available.
-7. A `KktSolver::solve` allocates once per factor, at its first call (the
-   lazy initialization of a mutex on macOS); `solve_refined_with` with a
-   reused `RefineWorkspace` allocates nothing afterwards ([#7](https://github.com/StrategicProjects/xingo-sparse/issues/7)).
-8. `Triplets::to_csc` does not store an entry whose sum is exactly zero
+7. `Triplets::to_csc` does not store an entry whose sum is exactly zero
    (the containers forbid explicit zeros); zeros are accepted as input.
 
 ## Design notes

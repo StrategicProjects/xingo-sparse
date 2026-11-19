@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use crate::real::{approx_eq, is_exact_zero, le, lt};
 use crate::{
     Col, ColumnRef, CscMatrix, Lu, LuError, LuFactor, LuOptions, PreOrder, RefactorReason, Row,
-    Sign, SparseVec, UpdateOutcome,
+    Sign, SparseVec, TolScale, UpdateOutcome,
 };
 
 /// The factor of these tests: `f64`, Forrest–Tomlin.
@@ -1510,6 +1510,254 @@ fn multiplier_limit_bounds_the_loss_of_the_update() {
     assert!(on < 1e4, "with the default limit: {on:e}");
     assert_eq!(none, 0);
     assert!(refused > 0);
+}
+
+// ---------------------------------------------------------------------------
+// The scale of the tolerances (Chapter 5.3; issue #2): `TolScale`.
+// ---------------------------------------------------------------------------
+
+/// `opts` with `TolScale::Column`.
+fn column_scaled(opts: LuOptions) -> LuOptions {
+    LuOptions {
+        tol_scale: TolScale::Column,
+        ..opts
+    }
+}
+
+/// The default is `Absolute`, and Rule P keeps the scale (P2).
+#[test]
+fn tol_scale_defaults_to_absolute() {
+    assert_eq!(LuOptions::default().tol_scale, TolScale::Absolute);
+    assert_eq!(TolScale::default(), TolScale::Absolute);
+    assert_eq!(LuOptions::for_scalar::<f32>().tol_scale, TolScale::Absolute);
+    let column = column_scaled(LuOptions::default());
+    let f = Lu::<f32>::new(LuOptions {
+        tol_scale: TolScale::Column,
+        ..LuOptions::for_scalar::<f32>()
+    });
+    assert_eq!(LuFactor::options(&f).tol_scale, column.tol_scale);
+}
+
+/// A convection–diffusion matrix on a `k × k` grid (nonsymmetric,
+/// diagonally dominant, so nonsingular), as triplets `(i, j, v)`.
+fn grid(k: usize) -> Vec<(usize, usize, f64)> {
+    let id = |a: usize, b: usize| a * k + b;
+    let mut t = Vec::new();
+    for a in 0..k {
+        for b in 0..k {
+            let i = id(a, b);
+            t.push((i, i, 4.5 + 0.3 * count(i * 7 % 5)));
+            if a > 0 {
+                t.push((i, id(a - 1, b), -1.3));
+            }
+            if a + 1 < k {
+                t.push((i, id(a + 1, b), -0.7));
+            }
+            if b > 0 {
+                t.push((i, id(a, b - 1), -1.1));
+            }
+            if b + 1 < k {
+                t.push((i, id(a, b + 1), -0.9));
+            }
+        }
+    }
+    t
+}
+
+/// The square matrix of order `n` with triplets `t`.
+fn square(n: usize, t: &[(usize, usize, f64)]) -> CscMatrix {
+    let tt: Vec<_> = t
+        .iter()
+        .map(|&(i, j, v)| (Row::from_usize(i), Col::from_usize(j), v))
+        .collect();
+    CscMatrix::from_triplets(n, n, &tt).unwrap()
+}
+
+/// The dense form of a square `CscMatrix`.
+fn dense_of(a: &CscMatrix) -> Dense {
+    let n = a.n_rows;
+    let mut d = vec![vec![0.0; n]; n];
+    for (j, col) in (0..n).map(|j| (j, a.col(Col::from_usize(j)))) {
+        for (&i, &v) in col.0.iter().zip(col.1) {
+            d[i as usize][j] = v;
+        }
+    }
+    d
+}
+
+/// The normwise backward error of FTRAN with `f` for `B x = B·(1, 2, …)`.
+fn ftran_backward_err(f: &mut LuF64, a: &CscMatrix) -> f64 {
+    let b = dense_of(a);
+    let xs: Vec<f64> = (0..a.n_rows).map(|i| 1.0 + count(i % 7)).collect();
+    let rhs: Vec<f64> = b
+        .iter()
+        .map(|row| row.iter().zip(&xs).map(|(v, x)| v * x).sum())
+        .collect();
+    let x = ftran_vec(f, &rhs);
+    backward_err(&b, &x, &rhs)
+}
+
+/// Issue #2: a nonsingular matrix whose columns are 40 % tiny (largest
+/// entry `10⁻¹⁰`, the shape of sherman3's inactive cells) is singular
+/// with the absolute tolerance and factorizes, accurately, with
+/// `TolScale::Column` — by Algorithm L, with the COLAMD pre-order (L5′)
+/// and by a replay (Algorithm R).
+#[test]
+fn column_scale_factorizes_tiny_columns() {
+    let k = 12;
+    let n = k * k;
+    let base = grid(k);
+    let mut beta = vec![0.0_f64; n];
+    for &(_, j, v) in &base {
+        beta[j] = beta[j].max(v.abs());
+    }
+    let tiny = |j: usize| j * 2_654_435_761 % 5 < 2;
+    let t: Vec<_> = base
+        .iter()
+        .map(|&(i, j, v)| (i, j, if tiny(j) { v * (1e-10 / beta[j]) } else { v }))
+        .collect();
+    let a = square(n, &t);
+    match LuF64::default().factorize(&a) {
+        Err(LuError::Singular {
+            rank_deficiency, ..
+        }) => assert!(rank_deficiency > 0),
+        other => panic!("absolute: {other:?}"),
+    }
+    for pre in [None, Some(PreOrder::Colamd)] {
+        let mut f = LuF64::new(column_scaled(LuOptions::default()));
+        f.set_pre_order(pre);
+        f.factorize(&a).unwrap();
+        assert!(f.check_invariants().is_ok());
+        let err = ftran_backward_err(&mut f, &a);
+        assert!(err < 1e-13, "{pre:?}: backward error {err:e}");
+        f.refactorize_same_pattern(&a).unwrap();
+        assert_eq!(f.stats().symbolic_reuses, 1, "{pre:?}");
+        let err = ftran_backward_err(&mut f, &a);
+        assert!(err < 1e-13, "{pre:?}, replayed: backward error {err:e}");
+    }
+    // The drop tolerance follows the column: the same matrix times 1e-12
+    // keeps its accuracy.
+    let t: Vec<_> = base.iter().map(|&(i, j, v)| (i, j, v * 1e-12)).collect();
+    let a = square(n, &t);
+    let mut f = LuF64::new(column_scaled(LuOptions::default()));
+    f.factorize(&a).unwrap();
+    let err = ftran_backward_err(&mut f, &a);
+    assert!(err < 1e-13, "times 1e-12: backward error {err:e}");
+}
+
+/// An exactly singular matrix (a duplicated column) and a numerically
+/// singular one (a column equal to another up to relative perturbations
+/// of `10⁻¹⁵`) are singular with `TolScale::Column` whatever the
+/// magnitude of the matrix; the absolute tolerance accepts the
+/// numerically singular one once its columns are large (a pivot of
+/// rounding noise), which is the other half of issue #2.
+#[test]
+fn column_scale_keeps_singular_matrices_singular() {
+    let k = 8;
+    let n = k * k;
+    let base = grid(k);
+    let column3: Vec<_> = base.iter().filter(|e| e.1 == 3).copied().collect();
+    for scale in [1.0, 1e8, 1e-10] {
+        for (label, rel) in [("exact", 0.0), ("numerical", 1e-15)] {
+            let mut t: Vec<_> = base
+                .iter()
+                .filter(|e| e.1 != 7)
+                .map(|&(i, j, v)| (i, j, v * scale))
+                .collect();
+            for (q, &(i, _, v)) in column3.iter().enumerate() {
+                t.push((i, 7, v * scale * (1.0 + rel * (count(q) - 1.5))));
+            }
+            let a = square(n, &t);
+            let column = LuF64::new(column_scaled(LuOptions::default())).factorize(&a);
+            assert!(
+                matches!(
+                    column,
+                    Err(LuError::Singular {
+                        rank_deficiency: 1,
+                        ..
+                    })
+                ),
+                "column, {label}, scale {scale:e}: {column:?}"
+            );
+            let absolute = LuF64::default().factorize(&a);
+            let accepted = label == "numerical" && approx_eq(scale, 1e8, 0.0);
+            assert_eq!(
+                absolute.is_ok(),
+                accepted,
+                "absolute, {label}, scale {scale:e}"
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases(96)))]
+
+    /// Invariant (O2): with `TolScale::Column`, scaling the columns of `A`
+    /// by powers of two changes nothing in the factorization but the
+    /// scale: the same pivot sequence, the same `L` bit for bit, `U D`,
+    /// and FTRAN returns `D⁻¹ x` exactly — for Algorithm L, step L5′ and a
+    /// replay by Algorithm R. A dependent basis loses the same columns.
+    #[test]
+    fn column_scale_is_invariant_under_column_scaling(m in 1_usize..40, kind in 0_usize..4,
+                                                      pre in any::<bool>(), singular in any::<bool>(),
+                                                      seed in any::<u64>()) {
+        let mut rng = Rng::new(seed);
+        let (a, mut basis) = gen_basis(&mut rng, m, shape_of(kind), 0);
+        if singular && m >= 2 {
+            let first = basis[0];
+            basis[1] = first;
+        }
+        let d: Vec<f64> = (0..a.n_cols())
+            .map(|_| 2f64.powi(i32::try_from(rng.below(121)).unwrap() - 60))
+            .collect();
+        let mut ad = a.clone();
+        for j in 0..ad.n_cols() {
+            let (start, end) = (ad.col_ptr[j], ad.col_ptr[j + 1]);
+            for v in &mut ad.val[start..end] {
+                *v *= d[j];
+            }
+        }
+        let scale_of = |c: &ColumnRef| match c {
+            ColumnRef::Structural(j) => d[j.index()],
+            ColumnRef::Logical(..) => 1.0,
+        };
+        let opts = column_scaled(LuOptions::default());
+        let mut f = LuF64::new(opts);
+        let mut g = LuF64::new(opts);
+        if pre {
+            f.set_pre_order(Some(PreOrder::Colamd));
+            g.set_pre_order(Some(PreOrder::Colamd));
+        }
+        let rf = fz(&mut f, &basis, &a);
+        let rg = fz(&mut g, &basis, &ad);
+        match (&rf, &rg) {
+            (Ok(()), Ok(())) => {}
+            (Err(LuError::Singular { cols: cf, .. }), Err(LuError::Singular { cols: cg, .. })) => {
+                prop_assert_eq!(cf, cg);
+                return Ok(());
+            }
+            _ => prop_assert!(false, "{:?} vs {:?}", rf, rg),
+        }
+        for replay in [false, true] {
+            if replay {
+                f.refactorize_same_pattern(&(&basis[..], &a)).unwrap();
+                g.refactorize_same_pattern(&(&basis[..], &ad)).unwrap();
+                prop_assert_eq!(f.stats().symbolic_reuses, g.stats().symbolic_reuses);
+            }
+            prop_assert_eq!(&f.factors.step_row, &g.factors.step_row);
+            prop_assert_eq!(&f.factors.step_col, &g.factors.step_col);
+            prop_assert_eq!(&f.factors.l_value, &g.factors.l_value);
+            prop_assert_eq!(&f.factors.l_index, &g.factors.l_index);
+            prop_assert_eq!((f.stats().nnz_l, f.stats().nnz_u), (g.stats().nnz_l, g.stats().nnz_u));
+            let rhs = rng.dense_ints(m);
+            let x = ftran_vec(&mut f, &rhs);
+            let y = ftran_vec(&mut g, &rhs);
+            for (k, c) in basis.iter().enumerate() {
+                prop_assert_eq!((x[k] / scale_of(c)).to_bits(), y[k].to_bits(), "position {}", k);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

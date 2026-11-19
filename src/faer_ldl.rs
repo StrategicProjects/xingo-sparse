@@ -89,10 +89,16 @@
 //! with the same factor at the same moment gets a temporary buffer
 //! instead of waiting) — with [`KktSolver::solve_refined_with`] and a
 //! reused [`crate::RefineWorkspace`], a refined solve allocates nothing
-//! either. Measured in L1.5b with a counting allocator on the 186 Netlib
-//! systems of the middle regime: 0 allocations in a second solve and in
-//! a second refined solve with the same workspace (the first solve with a
-//! factor may make one, the lazy initialization of the mutex on macOS).
+//! either. The mutex is *primed* by the factorization: where the standard
+//! library's mutex is a lazily boxed `pthread_mutex_t` (macOS and the
+//! other targets without futexes), its box is allocated at the first
+//! lock, so the factorization takes and releases the lock once, and the
+//! first solve finds it already initialized (issue #7; on futex targets
+//! the priming costs one atomic operation). Measured in L1.5b with a
+//! counting allocator on the 186 Netlib systems of the middle regime: 0
+//! allocations in a second solve and in a second refined solve with the
+//! same workspace; and, since the priming, checked by the test
+//! `kkt_no_alloc` for the first solve too.
 //!
 //! ## Invariants
 //! (F1) The numeric factor shares the symbolic structure it was computed
@@ -283,6 +289,17 @@ pub struct FaerNumeric<T: Real> {
 /// faer's stack memory for [`KktSolver::solve`], allocated by the
 /// factorization; a mutex so that a shared factor stays `Sync`.
 struct SolveScratch(Mutex<MemBuffer>);
+
+impl SolveScratch {
+    /// The buffer behind a mutex already locked and released once, so that
+    /// the first solve does not allocate the lazily boxed mutex of the
+    /// targets without futexes (Algorithm S; issue #7).
+    fn primed(buf: MemBuffer) -> Self {
+        let m = Mutex::new(buf);
+        drop(m.try_lock());
+        Self(m)
+    }
+}
 
 impl std::fmt::Debug for SolveScratch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -613,10 +630,10 @@ impl KktSolver<f64> for FaerLdl {
                 inertia,
                 bumped,
                 scale,
-                scratch: SolveScratch(Mutex::new(
+                scratch: SolveScratch::primed(
                     MemBuffer::try_new(sym.solve_in_place_scratch::<f64>(1, Par::Seq))
                         .map_err(|_| KktError::Backend("faer: out of memory"))?,
-                )),
+                ),
             },
             inertia,
         ))

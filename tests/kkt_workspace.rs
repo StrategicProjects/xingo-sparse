@@ -1,9 +1,8 @@
 //! Chapters 5.15 and 5.17, Algorithm S, and Chapter 5.14, Algorithm F
 //! (tasks L1.5b and L1.6a): a reused `RefineWorkspace` gives the same
 //! refined solution as a fresh one, call after call, with every backend.
-//! (That the reuse allocates nothing was measured with a counting
-//! allocator in the L1.5b/L1.6a harnesses, outside the crate: a global
-//! allocator needs `unsafe`, which D-0006 keeps out of tests.)
+//! (That the solves and the reuse allocate nothing is checked by
+//! `kkt_no_alloc.rs`, with a counting allocator.)
 
 use xingo_sparse::{
     Amd, Col, CscMatrix, KktForm, KktSolver, RefineWorkspace, Refinement, Regularization, Row,
