@@ -102,7 +102,8 @@ sparse LDLᵀ/LBLᵀ (feature `faer`), remains as an alternative and as the
 oracle of the test suite. Both are ordered by our AMD. For a general
 symmetric indefinite matrix whose inertia is the unknown — `A − σI` of a
 shift-invert eigensolver — `KktForm::Indefinite` factorizes it once with
-the pivoted LBLᵀ and reports the inertia instead of checking it.
+the pivoted LBLᵀ of `SupernodalLdl` and reports the inertia instead of
+checking it (`FaerLdl` refuses this form).
 
 ```rust
 use xingo_sparse::{Amd, BlockPartition, KktForm, KktSolver, Refinement, Regularization, SupernodalLdl, Triplets};

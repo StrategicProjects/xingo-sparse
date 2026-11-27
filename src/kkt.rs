@@ -162,11 +162,18 @@
 //! pattern is square (the order is the pattern's); K2′ (equilibration) is
 //! the same, since it reads no form; K2″ adds nothing; K3 never runs; K3′
 //! (finite factor) is the same; K4 returns the count, with the zero-pivot
-//! rule above. Every backend factorizes `Indefinite` with its pivoted
+//! rule above. A backend factorizes `Indefinite` with its pivoted
 //! `LBLᵀ` (Bunch & Kaufman 1977) — the unregularized path of `Augmented`
 //! — or refuses it with [`KktError::Backend`]; it never falls back to an
 //! unpivoted `LDLᵀ`, which could fail on a nonsingular `K` or, worse,
-//! return a factor of a different matrix.
+//! return a factor of a different matrix. Since a backend cannot check the
+//! inertia it reports for this form, it offers the form only if that
+//! inertia is the one of its factor of a nearby matrix (S6′): `SupernodalLdl`
+//! (Algorithm M of Chapter 5.17, with delayed pivots) does; `FaerLdl`
+//! refuses the form on every structure (task I08: faer's intranodal
+//! `LBLᵀ`, with no delays, returned a factor that is not backward stable
+//! and a wrong inertia, in silence, for 20 of 23 005 nonsingular random
+//! matrices; Chapter 5.15).
 //!
 //! *What the inertia is.* (S6′) The inertia returned for `Indefinite` is
 //! the exact inertia of the computed factor `P K Pᵀ ≈ L B Lᵀ`; by
@@ -621,7 +628,9 @@ pub enum KktForm {
     /// [`KktError::Structure`], step K0′), and the inertia is *reported*,
     /// never checked: [`KktSolver::factorize`] returns it and never fails
     /// with [`KktError::WrongInertia`]. A zero pivot is
-    /// [`KktError::ZeroPivot`] (step K4; invariant (S6′)).
+    /// [`KktError::ZeroPivot`] (step K4; invariant (S6′)). `FaerLdl`
+    /// (feature `faer`) refuses this form with [`KktError::Backend`]: use
+    /// [`crate::SupernodalLdl`].
     ///
     /// ```
     /// use xingo_sparse::{Amd, Col, CscMatrix, Inertia, KktForm, KktSolver, Regularization, Row, SupernodalLdl};

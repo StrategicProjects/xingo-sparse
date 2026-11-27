@@ -2,11 +2,11 @@
 //! form", and invariants (S6′), (L11), (F3)).
 //!
 //! Oracles, from the strongest:
-//! 1. (L11)/(F3): with `Regularization::none()`, the factor of
+//! 1. (L11): with `Regularization::none()`, the factor of
 //!    `KktForm::Indefinite` is the factor of `Augmented { n_primal:
 //!    i.negative, n_dual: i.positive }` bit for bit (`i` the inertia found);
-//!    for `SupernodalLdl` every stored array is compared, for `FaerLdl`
-//!    (opaque) the solves are.
+//!    every stored array of `SupernodalLdl` is compared. (F3): `FaerLdl`
+//!    refuses the form (task I08), checked wherever it was an oracle.
 //! 2. Exact inertia by construction: `K = P L₀ Δ₀ L₀ᵀ Pᵀ` with `L₀` unit
 //!    lower of small integers and `Δ₀` of `±1`, `±2` and `[0 1; 1 0]`
 //!    blocks — every entry an exact integer in `f64`, the inertia that of
@@ -281,30 +281,23 @@ fn oracle_supernodal<K: DenseKernel<f64>>(
     Ok(out)
 }
 
-/// Oracle 1 on `FaerLdl` (supernodal structure forced), plus (S6′).
+/// (F3): `FaerLdl` refuses the indefinite form with `KktError::Backend` on
+/// every structure (task I08).
 #[cfg(feature = "faer")]
-fn oracle_faer(k: &CscMatrix) -> Result<Result<Inertia, KktError>, String> {
-    let s = crate::FaerLdl {
-        supernodal: Some(true),
-    };
-    let n = k.n_cols();
-    let ind = factor(&s, k, KktForm::Indefinite);
-    let out = ind.as_ref().map(|(_, i)| *i).map_err(Clone::clone);
-    check_s6_prime(&out, n)?;
-    if let Ok((num, i)) = &ind {
-        if !num.is_pivoted() {
-            return Err("FaerLdl: Indefinite did not take the LBLᵀ path".into());
-        }
-        let aug = KktForm::Augmented {
-            n_primal: i.negative,
-            n_dual: i.positive,
-        };
-        let (num_a, ia) = factor(&s, k, aug).map_err(|e| format!("(F3): Augmented failed: {e}"))?;
-        if ia != *i || num.inertia() != *i || !same_solves(&s, num, &num_a, n) {
-            return Err("(F3): the factors differ".into());
+fn faer_refuses_indefinite(k: &CscMatrix) -> Result<(), String> {
+    for supernodal in [Some(true), Some(false), None] {
+        let s = crate::FaerLdl { supernodal };
+        match factor(&s, k, KktForm::Indefinite) {
+            Err(KktError::Backend(_)) => {}
+            other => {
+                return Err(format!(
+                    "(F3): FaerLdl {{ supernodal: {supernodal:?} }} did not refuse: {:?}",
+                    other.map(|(_, i)| i)
+                ));
+            }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Oracle 3: the eigenvalues of a dense symmetric matrix by cyclic Jacobi
@@ -492,41 +485,26 @@ fn singular_matrices_are_zero_pivots() {
     }
     #[cfg(feature = "faer")]
     {
-        let f = crate::FaerLdl {
-            supernodal: Some(true),
-        };
-        assert!(matches!(
-            factor(&f, &ones, KktForm::Indefinite).err(),
-            Some(KktError::ZeroPivot { .. } | KktError::NotFinite { .. })
-        ));
-        assert_eq!(
-            factor(&f, &shifted, KktForm::Indefinite).err(),
-            Some(KktError::ZeroPivot { position: 1 })
-        );
+        assert_eq!(faer_refuses_indefinite(&ones), Ok(()));
+        assert_eq!(faer_refuses_indefinite(&shifted), Ok(()));
     }
 }
 
-/// `FaerLdl` refuses the indefinite form on a simplicial structure, before
-/// factorizing (D-0094), and takes it on a supernodal one.
+/// `FaerLdl` refuses the indefinite form on every structure, before
+/// factorizing (task I08; on a simplicial one since D-0094) — even on a
+/// quasi-definite matrix, which its intranodal Bunch–Kaufman would
+/// factorize in any order.
 #[cfg(feature = "faer")]
 #[test]
-fn faer_simplicial_refuses_the_indefinite_form() {
-    // Quasi-definite: faer's intranodal Bunch–Kaufman, which cannot delay
-    // a pivot, factorizes it in any order.
-    let (k, inertia) = quasi_definite(6, 4, 11);
-    let f = crate::FaerLdl {
-        supernodal: Some(false),
-    };
-    assert!(matches!(
-        factor(&f, &k, KktForm::Indefinite).err(),
-        Some(KktError::Backend(_))
-    ));
-    let f = crate::FaerLdl {
-        supernodal: Some(true),
-    };
-    let (num, i) = factor(&f, &k, KktForm::Indefinite).unwrap();
-    assert!(num.is_pivoted());
-    assert_eq!(i, inertia);
+fn faer_ldl_refuses_the_indefinite_form() {
+    let (k, _) = quasi_definite(6, 4, 11);
+    for supernodal in [Some(false), Some(true), None] {
+        let f = crate::FaerLdl { supernodal };
+        assert!(matches!(
+            factor(&f, &k, KktForm::Indefinite).err(),
+            Some(KktError::Backend(_))
+        ));
+    }
 }
 
 #[test]
@@ -560,7 +538,7 @@ fn shift_invert_example_counts_the_eigenvalues_below_the_shift() {
         assert_eq!(oracle_supernodal(&s, &k), Ok(Ok(want)));
     }
     #[cfg(feature = "faer")]
-    assert_eq!(oracle_faer(&k), Ok(Ok(want)));
+    assert_eq!(faer_refuses_indefinite(&k), Ok(()));
 }
 
 /// The unregularized augmented systems of the existing tests, as
@@ -593,20 +571,7 @@ fn indefinite_agrees_with_augmented_on_the_kkt_generator() {
                 }
             }
             #[cfg(feature = "faer")]
-            {
-                let r = oracle_faer(&aug).unwrap();
-                let f = crate::FaerLdl {
-                    supernodal: Some(true),
-                };
-                // (F3): the augmented path of FaerLdl has no structural
-                // check (M7), the indefinite one has.
-                if let Ok(a) = factor(&f, &aug, form).map(|(_, i)| i) {
-                    assert!(
-                        r == Ok(a) || matches!(r, Err(KktError::ZeroPivot { .. })),
-                        "seed {seed}: {r:?} vs {a:?}"
-                    );
-                }
-            }
+            faer_refuses_indefinite(&aug).unwrap();
         }
     }
     assert!(ok > 500, "{ok}");
@@ -639,17 +604,11 @@ fn inertia_matches_dense_eigenvalues() {
         outcomes.push(
             oracle_supernodal(&SupernodalLdl::<f64, crate::FaerDense>::default(), &k).unwrap(),
         );
-        // faer's intranodal Bunch–Kaufman cannot delay a pivot: it may fail
-        // ((S6′) still holds), never with another inertia.
         #[cfg(feature = "faer")]
-        let weak = [oracle_faer(&k).unwrap()];
+        faer_refuses_indefinite(&k).unwrap();
         if separated {
             for o in &outcomes {
                 assert_eq!(*o, Ok(want), "seed {seed}: {lam:?}");
-            }
-            #[cfg(feature = "faer")]
-            for i in weak.iter().flatten() {
-                assert_eq!(*i, want, "faer, seed {seed}");
             }
             checked += 1;
         } else {
@@ -768,11 +727,7 @@ proptest! {
             let s = SupernodalLdl::<f64, crate::FaerDense>::default();
             let r = oracle_supernodal(&s, &k).map_err(TestCaseError::fail)?;
             prop_assert_eq!(r, Ok(inertia));
-            // faer's Bunch–Kaufman has no zero-pivot test: (S6′) and (F3)
-            // always, the inertia when it succeeds.
-            if let Ok(i) = oracle_faer(&k).map_err(TestCaseError::fail)? {
-                prop_assert_eq!(i, inertia);
-            }
+            faer_refuses_indefinite(&k).map_err(TestCaseError::fail)?;
         }
     }
 
@@ -790,10 +745,7 @@ proptest! {
             prop_assert_eq!(r, Ok(inertia));
         }
         #[cfg(feature = "faer")]
-        {
-            let r = oracle_faer(&k).map_err(TestCaseError::fail)?;
-            prop_assert_eq!(r, Ok(inertia));
-        }
+        faer_refuses_indefinite(&k).map_err(TestCaseError::fail)?;
     }
 
     /// Exactly singular `L₀ Δ₀ L₀ᵀ`: (S6′) always — a zero pivot, or (the
@@ -813,10 +765,6 @@ proptest! {
             check_s6_prime(&r, n).map_err(TestCaseError::fail)?;
         }
         #[cfg(feature = "faer")]
-        {
-            let f = crate::FaerLdl { supernodal: Some(true) };
-            let r = factor(&f, &k, KktForm::Indefinite).map(|(_, i)| i);
-            check_s6_prime(&r, n).map_err(TestCaseError::fail)?;
-        }
+        faer_refuses_indefinite(&k).map_err(TestCaseError::fail)?;
     }
 }

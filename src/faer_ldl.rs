@@ -63,21 +63,11 @@
 //!       Bunch–Kaufman, whose interchanges stay inside each supernode (the
 //!       analyzed structure does not change). With a simplicial structure
 //!       faer has no pivoted kernel, and the `LDLᵀ` path runs instead.
-//!     * [`KktForm::Indefinite`] (issue #8; no regularization, step K0′ of
-//!       Chapter 5.14) takes the `LBLᵀ` path when the structure is
-//!       supernodal. With a simplicial structure it is refused with
-//!       [`KktError::Backend`] *before* any factorization: the `LDLᵀ`
-//!       fallback of the augmented system is no `LBLᵀ` (it fails on a
-//!       nonsingular `K` with a zero diagonal), and faer's simplicial
-//!       `LBLᵀ` accepts a zero pivot in silence (D-0094). Force the
-//!       supernodal structure ([`FaerLdl::supernodal`] `= Some(true)`) or
-//!       use [`crate::SupernodalLdl`], which is the recommended backend for
-//!       this form: faer's Bunch–Kaufman has no relative zero-pivot test
-//!       (step M3 of Chapter 5.17), so a `K` singular to working precision
-//!       can come back as a factor with huge entries rather than an error.
-//!       What is checked here: the structure of `K` (step M7 of Chapter
-//!       5.17, a maximum matching: a structurally singular `K` is
-//!       [`KktError::ZeroPivot`]), (S10) and an exact zero pivot (S6′).
+//!     * [`KktForm::Indefinite`] (issue #8) is refused with
+//!       [`KktError::Backend`] on every structure, after the regularization
+//!       check of step K0′ of Chapter 5.14 and *before* any factorization
+//!       (task I08; see "The indefinite form" below). Use
+//!       [`crate::SupernodalLdl`] for it.
 //! N3. Read the pivots — the diagonal of `Δ` (first entry of each column
 //!     of the simplicial `L`; diagonal of each supernode's dense block),
 //!     plus the subdiagonal of `B` for the `2×2` blocks of `LBLᵀ` — and
@@ -91,32 +81,30 @@
 //!     `B`) is not finite, fail with [`KktError::NotFinite`] at the
 //!     original row `fwd[k]` of the first such column `k`.
 //! N4. (S6): fail with [`KktError::WrongInertia`] unless the inertia is the
-//!     one the form requires. For [`KktForm::Indefinite`] (S6′): the count
-//!     is returned, unless it has a zero pivot — then
-//!     [`KktError::ZeroPivot`] at the original row of the first one, `fwd[q[k]]`
-//!     with `q` faer's intranodal pivoting permutation — and unless `K` is
-//!     structurally singular (step M7 of Chapter 5.17).
+//!     one the form requires.
 //!
-//! *Pivoting and the indefinite form (task I08).* The intranodal `LBLᵀ`
-//! runs faer's dense Bunch–Kaufman on each supernode with faer's default
-//! strategy, `PartialDiag` (the `1×1` candidate is the largest remaining
-//! diagonal entry). faer 0.24.4 states one of its tests with `λ` and `σ`
-//! exchanged (Algorithm B′ of Chapter 5.16), but with the diagonal search a
-//! `2×2` pivot has `|e₂₂| ≤ |e₁₁| < α λ`, so `|det E| > (1 − α²) λ²`: the
-//! singular `2×2` pivot of the `Partial` strategy does not arise this way.
-//! What was measured instead (I08, 23 005 random `L₀ Δ₀ L₀ᵀ`): about half
-//! are refused (N3′ or N4), and some return a factor that is not backward
-//! stable — backward error of a solve from `9·10⁻⁵` up — whose inertia is
-//! wrong: 20 of 23 005 with `Indefinite` (with `Augmented` of the true
-//! inertia N4 refuses all 20 with [`KktError::WrongInertia`]); with faer's
-//! `Rook` strategy, whose test is right, 9; Algorithm M, which delays
-//! pivots, gets all of them right. That points at the pivoting restricted
-//! to the columns of a supernode with no delay (a supernode whose block is
-//! singular or nearly so while `K` is not), but the cause was not isolated
-//! inside faer. The factor
-//! is opaque here and nothing corrects it: for [`KktForm::Indefinite`] the
-//! inertia `FaerLdl` returns is not guaranteed. The `SupernodalLdl` path
-//! (Algorithm M, with delays) is the one to use for this form.
+//! *The indefinite form (task I08).* Issue #8 let [`KktForm::Indefinite`]
+//! take the intranodal `LBLᵀ` of a supernodal structure and return the
+//! count of its pivots, with the structural check of step M7 of Chapter
+//! 5.17. Measured in I08 on 23 005 random `L₀ Δ₀ L₀ᵀ` (exact integers,
+//! order ≤ 27, nonsingular): 11 655 were refused (N3′ or
+//! N4) and **20 returned a factor with the wrong inertia**, in silence —
+//! factors that are not backward stable (backward error of a solve from
+//! `9·10⁻⁵` to `4·10⁻²`). With `Augmented` of the true inertia N4 refuses
+//! all 20 with [`KktError::WrongInertia`]: only the form that cannot check
+//! is fooled. faer's other strategies do not cure it (`Partial`: 13 wrong;
+//! `Rook`, whose pivot test is right: 9), and Algorithm M of Chapter 5.17,
+//! which delays pivots, gets all of them right; the probable cause is the
+//! pivoting restricted to the columns of a supernode with no delay (a
+//! supernode whose block is singular or nearly so while `K` is not), not
+//! isolated inside faer. faer's default strategy here, `PartialDiag`,
+//! takes the largest remaining diagonal entry as the `1×1` candidate, so
+//! its `2×2` pivots have `|e₂₂| ≤ |e₁₁| < α λ` and `|det E| > (1 − α²) λ²`:
+//! the singular `2×2` pivot of faer's `Partial` strategy (Chapter 5.16,
+//! Algorithm B′) is not the mechanism. The factor is opaque here, so it
+//! cannot be checked pivot by pivot; a backend whose reported inertia is
+//! not a guarantee does not offer the form at all. The unregularized
+//! `Augmented` path keeps the same `LBLᵀ`: there N4 checks the count.
 //!
 //! ## Algorithm S (Solve)
 //! `x ← S x`, faer's permuted triangular solves `x ← Pᵀ L⁻ᵀ Δ⁻¹ L⁻¹ P x`
@@ -149,14 +137,9 @@
 //!      their explicit zeros).
 //! (S6), (S6′) as in Chapter 5.14, checked in step N4 and asserted in
 //!      debug builds.
-//! (F3) With [`Regularization::none`], when [`KktForm::Indefinite`]
-//!      succeeds with the inertia `i`, its factor is bit for bit that of
-//!      `Augmented { n_primal: i.negative, n_dual: i.positive }` (as (L11)
-//!      of Chapter 5.17): both take the same `LBLᵀ` on the same assembled
-//!      values. The converse differs from Chapter 5.17: the augmented path
-//!      here has no structural check, so on a structurally singular `K` it
-//!      can return a factor where `Indefinite` returns
-//!      [`KktError::ZeroPivot`].
+//! (F3) [`KktForm::Indefinite`] is refused with [`KktError::Backend`] on
+//!      every structure and with every regularization that step K0′
+//!      accepts (task I08).
 //!
 //! ## What was read
 //! faer 0.24.4, `sparse::linalg::cholesky` (the public API and its
@@ -187,10 +170,9 @@ use faer::{Conj, MatMut, Par, Side, Spec};
 
 use crate::kkt::{
     assemble_regularized, check_form_regularization, check_inertia, check_regularization,
-    count_inertia, first_zero_pivot, lower_with_diagonal, pivot_signs,
+    count_inertia, lower_with_diagonal, pivot_signs,
 };
 use crate::real::{Real, approx_eq, is_exact_zero};
-use crate::supernodal::structural_deficiency;
 use crate::{
     CscMatrix, Inertia, KktError, KktForm, KktSolver, Ordering, OrderingTarget, Pattern, Perm,
     Regularization, SparseError,
@@ -553,10 +535,11 @@ impl KktSolver<f64> for FaerLdl {
         // K0′.
         check_form_regularization(form, &reg)?;
         let supernodal = matches!(sym.raw(), SymbolicCholeskyRaw::Supernodal(_));
-        if form == KktForm::Indefinite && !supernodal {
+        // N2: the indefinite form is refused (task I08).
+        if form == KktForm::Indefinite {
             return Err(KktError::Backend(
-                "KktForm::Indefinite needs a supernodal structure \
-                 (FaerLdl { supernodal: Some(true) }); or use SupernodalLdl",
+                "FaerLdl does not offer KktForm::Indefinite \
+                 (its inertia is not guaranteed); use SupernodalLdl",
             ));
         }
         // N1.
@@ -573,10 +556,9 @@ impl KktSolver<f64> for FaerLdl {
         );
         let mut values = vec![0.0_f64; sym.len_val()];
         // N2.
-        let use_lblt = (form == KktForm::Indefinite
-            || (matches!(form, KktForm::Augmented { .. })
-                && !reg.is_quasi_definite()
-                && reg.pivot_tol.is_none()))
+        let use_lblt = matches!(form, KktForm::Augmented { .. })
+            && !reg.is_quasi_definite()
+            && reg.pivot_tol.is_none()
             && supernodal;
         let (lblt, d, twos, faer_bumps) = if use_lblt {
             let (lblt, ones, twos) = factor_lblt(sym, a, &mut values)?;
@@ -677,29 +659,11 @@ impl KktSolver<f64> for FaerLdl {
         // N3.
         let bumped = faer_bumps;
         let found = count_inertia(d.iter().copied(), twos.into_iter());
-        // N4 (S6), (S6′).
+        // N4 (S6).
         let inertia = check_inertia(found, form, n, || {
-            let b = lblt.as_ref().expect("Indefinite takes the LBLᵀ path");
-            // Every pivot in pivot order (`d` holds the 1×1 ones only).
-            let all = pivots(sym, &values);
-            let z = first_zero_pivot(&all, |c| {
-                (c + 1 < n && !is_exact_zero(b.subdiag[c])).then(|| b.subdiag[c])
-            })
-            .expect("a zero in the count is a zero pivot");
-            symbolic.perm.fwd[b.fwd[z]] as usize
+            unreachable!("KktForm::Indefinite is refused in step N2")
         })?;
-        if form == KktForm::Indefinite
-            && let Some(c) = structural_deficiency(k)
-        {
-            return Err(KktError::ZeroPivot { position: c });
-        }
-        debug_assert!(
-            form.expected_inertia(n) == Some(inertia)
-                || (form == KktForm::Indefinite
-                    && inertia.zero == 0
-                    && inertia.positive + inertia.negative == n),
-            "(S6), (S6′)"
-        );
+        debug_assert!(form.expected_inertia(n) == Some(inertia), "(S6)");
         Ok((
             FaerNumeric {
                 faer: Arc::clone(&symbolic.faer),

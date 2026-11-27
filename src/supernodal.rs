@@ -2059,7 +2059,7 @@ fn update_lblt_scalar<T: Real>(
 /// polynomial in the entries, so `K` is singular whatever their values.
 /// Depth-first augmenting paths with lookahead after a cheap assignment
 /// (Duff 1981, MC21), iterative; `O(N · nnz)` in the worst case.
-pub(crate) fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
+fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
     let n = k.n_rows;
     let none = usize::MAX;
     // The adjacency of the symmetric pattern (nonzero entries only).

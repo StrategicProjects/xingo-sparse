@@ -11,18 +11,19 @@ version may change the public API.
 
 * `KktForm::Indefinite` (issue
   [#8](https://github.com/StrategicProjects/xingo-sparse/issues/8)): a
-  symmetric matrix of unknown inertia. `factorize` takes the pivoted
-  `LBLᵀ` (Algorithm M of `SupernodalLdl`; faer's intranodal Bunch–Kaufman
-  in `FaerLdl`, supernodal structure only), with no regularization, and
-  *reports* the inertia it finds instead of checking it: it never fails
-  with `WrongInertia`. A zero pivot is `ZeroPivot`; any regularization
+  symmetric matrix of unknown inertia. `SupernodalLdl::factorize` takes
+  the pivoted `LBLᵀ` (Algorithm M, with delayed pivots), with no
+  regularization, and *reports* the inertia it finds instead of checking
+  it: it never fails with `WrongInertia`. A zero pivot is `ZeroPivot`; any regularization
   other than `Regularization::none()` is `Structure`. With
   `Regularization::none()` the factor equals, bit for bit, the factor of
   `Augmented { n_primal: i.negative, n_dual: i.positive }` (`i` the
   inertia found): a caller that factorized twice to learn the inertia now
-  factorizes once, with the same results. `FaerLdl` refuses the form on a
-  simplicial structure (`Backend`) and checks the structure of `K` (a
-  structurally singular `K` is `ZeroPivot`).
+  factorizes once, with the same results. `FaerLdl` refuses the form with
+  `Backend` on every structure: faer's intranodal `LBLᵀ`, which cannot
+  delay a pivot, returned a factor with the wrong inertia, in silence, for
+  20 of 23 005 random nonsingular matrices (with `Augmented` of the true
+  inertia it fails with `WrongInertia`, as before).
 
 ### Changed (breaking)
 
@@ -48,19 +49,21 @@ try Augmented, refactor on WrongInertia { found }
 ### Fixed
 
 * `FaerDense::sytrf` (feature `faer`) no longer returns a singular or
-  unstable `2×2` pivot. faer 0.24.4's partial-pivoting Bunch–Kaufman
-  states the test `|a_kk| σ ≥ α λ²` as `|a_kk| λ ≥ α σ²` (`λ` and `σ`
-  exchanged), so it could take `E = [1 2; 2 4]` in `[1 2 0; 2 4 8; 0 8 0]`
-  and write NaNs into the factor; `SupernodalLdl<f64, FaerDense>` then
-  refused nonsingular, well-conditioned indefinite matrices on the `LBLᵀ`
-  path (`ZeroPivot` or `NotFinite`; a panic in debug builds) — 55 of
-  9 015 factorizations of random `L₀ Δ₀ L₀ᵀ`. The kernel now checks every
-  `2×2` block faer returns against Bunch–Kaufman's test and, if one fails,
-  refactorizes the block with `NaiveDense` (Algorithm B′ of Chapter 5.16).
-  Where faer's pivots all pass, the factor is unchanged bit for bit; in
-  the factorizations that had such a pivot and still succeeded (1 131 of
-  the 8 960 that succeeded before) the factor changes, with the same
-  inertia. `NaiveDense` and the definite paths are unchanged.
+  unstable `2×2` pivot. It asked faer 0.24.4 for Bunch–Kaufman with
+  *partial* pivoting, which states the test `|a_kk| σ ≥ α λ²` as `|a_kk| λ
+  ≥ α σ²` (`λ` and `σ` exchanged; reported as
+  [faer-rs#288](https://github.com/sarah-quinones/faer-rs/issues/288)), so
+  it could take `E = [1 2; 2 4]` in `[1 2 0; 2 4 8; 0 8 0]` and write NaNs
+  into the factor; `SupernodalLdl<f64, FaerDense>` then refused
+  nonsingular, well-conditioned indefinite matrices on the `LBLᵀ` path
+  (`ZeroPivot` or `NotFinite`; a panic in debug builds) — 55 of 9 015
+  factorizations of random `L₀ Δ₀ L₀ᵀ`, none now. The kernel now asks for
+  faer's *rook* pivoting, whose test is right, and keeps a check of every
+  `2×2` block against Bunch–Kaufman's test, refactorizing the block with
+  `NaiveDense` if one fails (Algorithm B′ of Chapter 5.16; it did not
+  trigger in the measurements). The pivots change: of the 8 960
+  factorizations that succeeded before, 2 203 give another factor (the
+  same inertia). `NaiveDense` and the definite paths are unchanged.
 
 ## [0.5.0] — 2026-11-19
 
