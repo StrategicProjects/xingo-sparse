@@ -190,12 +190,19 @@ ones that can be closed have an issue.
    interior-point method without regularization: up to 15 352 delayed
    pivots in one system); the regularized path, which a running method
    should use there, is untouched bit for bit. `FaerLdl`'s intranodal
-   Bunch–Kaufman has no delays and fails on 246 of the 279 systems.
+   Bunch–Kaufman has no delays and fails on 246 of the 279 systems, and
+   `FaerLdl` refuses `KktForm::Indefinite` (`Backend`): without delays it
+   returned the wrong inertia, in silence, for 20 of 23 005 random
+   matrices; use `SupernodalLdl` for that form.
    Since 0.4.0 a *structurally* singular `K` (no perfect matching on its
    nonzero entries) is always refused (step M7); a `K` that is singular only
    numerically, with full structural rank, can still be factorized without
    an error: a backward-stable `LBLᵀ` is the exact factor of a nearby
-   nonsingular matrix (see the CHANGELOG of 0.4.0; [#1](https://github.com/StrategicProjects/xingo-sparse/issues/1)).
+   nonsingular matrix. Since 0.6.0 `KktSolver::condition_estimate` estimates
+   its reciprocal condition (Hager–Higham, a lower bound of `‖F⁻¹‖₁`, not a
+   certificate): on the 279 Netlib systems `rcond ≤ 10³u` separated the 17
+   singular ones that factorize from the 49 nonsingular ones — a measured
+   result, not a threshold the crate applies.
 2. The default regularization (`ρ = 10⁻⁶`, `δ = 10⁻⁸` in the equilibrated
    matrix) was calibrated on the 93 Netlib LPs at three stages of an
    interior-point method (558 systems, plus 3 × 558 with other random

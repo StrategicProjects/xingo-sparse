@@ -5,25 +5,63 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
-## [Unreleased]
+## [0.6.0] — 2026-11-27
+
+A symmetric indefinite form whose inertia is reported instead of checked,
+read access to the LU factors, a condition estimate for the KKT factors,
+and a fix of the `faer` dense kernel on the `LBLᵀ` path. The new enum
+variant and the new return type of `expected_inertia` are breaking
+changes (see "Changed (breaking)" and "Migration").
 
 ### Added
 
+* `Lu::triangular_factors() -> Option<TriangularFactors<T>>` (issue
+  [#6](https://github.com/StrategicProjects/xingo-sparse/issues/6)): a
+  copy, in CSC and in the index of the elimination steps, of `L` (strictly
+  lower, unit diagonal implicit), `U` (diagonal as the last entry of each
+  column) and the row and column permutations of a fresh factorization, so
+  that `P B Q = L U` up to the rounding of the elimination and the entries
+  it dropped (Algorithm X of Chapter 5.3, invariants (T1)–(T3)). `None`
+  for an invalid factor or after a Forrest–Tomlin update. The new type
+  `TriangularFactors` is `#[non_exhaustive]` and has `order()` and
+  `check_invariants()`. Exporting does not change later solves; a triangular
+  solve with the exported factors gives the same bits as `ftran` (a test).
+  This is what `xingo-extprec` 0.2's `verify::forward_error_bound_lu`
+  reads.
+* `KktSolver::condition_estimate(&numeric, &k) -> ConditionEstimate<T>`
+  (issue [#1](https://github.com/StrategicProjects/xingo-sparse/issues/1)):
+  a provided method (existing implementations inherit it) with the
+  Hager–Higham estimate of `‖F⁻¹‖₁` (Algorithm H of Chapter 5.14, the
+  shape of LAPACK's `xSYCON`), `F` the matrix the factor's solves invert;
+  it costs only when called (4 to 11 solves; 1 for `N = 1`) and
+  allocates three vectors of order `N`, nothing else (a test). The new type
+  `ConditionEstimate` (`#[non_exhaustive]`) holds `norm`, `inverse_norm`
+  (a lower bound of `‖F⁻¹‖₁`, so `rcond()` can only be too large) and
+  `solves`, with `rcond()`; the constant `CONDITION_ESTIMATE_STEPS = 5`
+  bounds the iterations. Measured: never above the exact value on 1 999
+  dense operators and 529 random KKT systems, within a factor 3 of it. On
+  the 279 unregularized Netlib KKT systems, `rcond ≤ 10³u` separated the 17
+  singular ones that factorize from the 49 nonsingular ones; this is a
+  measured result, documented as such, not a default or a behaviour of the
+  crate. A numerically singular `K` still factorizes without an error
+  (see "Known limitations" in the README); the estimate lets a caller
+  detect it, without certifying anything.
 * `KktForm::Indefinite` (issue
   [#8](https://github.com/StrategicProjects/xingo-sparse/issues/8)): a
   symmetric matrix of unknown inertia. `SupernodalLdl::factorize` takes
   the pivoted `LBLᵀ` (Algorithm M, with delayed pivots), with no
   regularization, and *reports* the inertia it finds instead of checking
-  it: it never fails with `WrongInertia`. A zero pivot is `ZeroPivot`; any regularization
-  other than `Regularization::none()` is `Structure`. With
+  it: it never fails with `WrongInertia`. A zero pivot is `ZeroPivot`; any
+  regularization other than `Regularization::none()` is `Structure`. With
   `Regularization::none()` the factor equals, bit for bit, the factor of
   `Augmented { n_primal: i.negative, n_dual: i.positive }` (`i` the
-  inertia found): a caller that factorized twice to learn the inertia now
-  factorizes once, with the same results. `FaerLdl` refuses the form with
-  `Backend` on every structure: faer's intranodal `LBLᵀ`, which cannot
-  delay a pivot, returned a factor with the wrong inertia, in silence, for
-  20 of 23 005 random nonsingular matrices (with `Augmented` of the true
-  inertia it fails with `WrongInertia`, as before).
+  inertia found; invariant (L11), a property test): a caller that
+  factorized twice to learn the inertia now factorizes once, with the same
+  results. `FaerLdl` refuses the form with `Backend` on every structure:
+  faer's intranodal `LBLᵀ`, which cannot delay a pivot, returned a factor
+  with the wrong inertia, in silence, for 20 of 23 005 random nonsingular
+  matrices (with `Augmented` of the true inertia it fails with
+  `WrongInertia`, as before).
 
 ### Changed (breaking)
 
@@ -46,12 +84,18 @@ try Augmented, refactor on WrongInertia { found }
                                     ->  KktForm::Indefinite with Regularization::none(), once
 ```
 
+Nothing else changes for code that uses the existing forms: their
+factors, inertias, errors and solves are the same bit for bit (with
+`FaerDense` as the dense kernel, see "Fixed").
+
 ### Fixed
 
 * `FaerDense::sytrf` (feature `faer`) no longer returns a singular or
-  unstable `2×2` pivot. It asked faer 0.24.4 for Bunch–Kaufman with
-  *partial* pivoting, which states the test `|a_kk| σ ≥ α λ²` as `|a_kk| λ
-  ≥ α σ²` (`λ` and `σ` exchanged; reported as
+  unstable `2×2` pivot (issue
+  [#9](https://github.com/StrategicProjects/xingo-sparse/issues/9)). It
+  asked faer 0.24.4 for Bunch–Kaufman with *partial* pivoting, which
+  states the test `|a_kk| σ ≥ α λ²` as `|a_kk| λ ≥ α σ²` (`λ` and `σ`
+  exchanged; reported as
   [faer-rs#288](https://github.com/sarah-quinones/faer-rs/issues/288)), so
   it could take `E = [1 2; 2 4]` in `[1 2 0; 2 4 8; 0 8 0]` and write NaNs
   into the factor; `SupernodalLdl<f64, FaerDense>` then refused
@@ -63,7 +107,12 @@ try Augmented, refactor on WrongInertia { found }
   `NaiveDense` if one fails (Algorithm B′ of Chapter 5.16; it did not
   trigger in the measurements). The pivots change: of the 8 960
   factorizations that succeeded before, 2 203 give another factor (the
-  same inertia). `NaiveDense` and the definite paths are unchanged.
+  same inertia). Measured time of the `LBLᵀ` path with `FaerDense`, 7
+  interleaved rounds: 1.00–1.09 of 0.5.0 (1.09 on one matrix with a front
+  of 1 898 columns, where the unchanged definite controls varied
+  0.98–1.06). `NaiveDense` and the definite paths are unchanged. A
+  sentinel test asserts faer's raw `Partial` output on the reproducer, so
+  that a fix upstream is noticed.
 
 ## [0.5.0] — 2026-11-19
 
@@ -399,6 +448,7 @@ the LU's absolute pivot tolerance declares unscaled tiny columns singular;
 `solve` allocates once per factor on first use; `Triplets::to_csc` does
 not store exact-zero sums.
 
+[0.6.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.6.0
 [0.5.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.5.0
 [0.4.1]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.4.1
 [0.4.0]: https://github.com/StrategicProjects/xingo-sparse/releases/tag/v0.4.0
