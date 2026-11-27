@@ -676,8 +676,9 @@ fn block_inertia<T: Real>(a: &DenseBlock<T>, pivot_2x2: &[bool]) -> Inertia {
 /// faer's dense kernels (`f64` only in v0.1; extended types use
 /// [`NaiveDense`]). `sytrf` uses faer's Bunch–Kaufman with partial
 /// pivoting, whose pivot choices may differ from [`NaiveDense`]'s in ties:
-/// both satisfy (D2). faer 0.24.4 states one of Bunch–Kaufman's tests with
-/// `λ` and `σ` exchanged and may return a `2×2` pivot that is singular;
+/// both satisfy (D2). faer 0.24.4's partial pivoting (the strategy this
+/// kernel asks for) states one of Bunch–Kaufman's tests with `λ` and `σ`
+/// exchanged and may return a `2×2` pivot that is singular;
 /// such a factor is refused and the block refactorized by [`NaiveDense`]
 /// (Algorithm B′ of Chapter 5.16).
 #[cfg(feature = "faer")]
@@ -1114,7 +1115,8 @@ mod tests {
         assert_eq!(s.zero, 1);
     }
 
-    /// Algorithm B′ on the smallest block faer 0.24.4 pivots wrongly on
+    /// Algorithm B′ on the smallest block faer 0.24.4's partial pivoting
+    /// takes a singular pivot on
     /// (task I08): `[1 2 0; 2 4 8; 0 8 0]` (det `−64`). Bunch–Kaufman takes
     /// the `1×1` pivot `1` (`|w₀₀| σ = 8 ≥ α λ² = 2.56`); faer, with `λ` and
     /// `σ` exchanged (`1 < α σ²/λ = 20.5`), takes `E = [1 2; 2 4]`, which is

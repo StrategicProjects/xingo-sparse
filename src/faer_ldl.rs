@@ -97,13 +97,26 @@
 //!     with `q` faer's intranodal pivoting permutation — and unless `K` is
 //!     structurally singular (step M7 of Chapter 5.17).
 //!
-//! *faer's pivot test (task I08).* The intranodal `LBLᵀ` runs faer's dense
-//! Bunch–Kaufman on each supernode, whose test has `λ` and `σ` exchanged
-//! (Algorithm B′ of Chapter 5.16): it can take a singular `2×2` pivot of a
-//! nonsingular `K`. The factor is opaque here, so it is not corrected; the
-//! consequence observed is a refusal — N3′ (a NaN or an infinity) or N4 —
-//! and the tests check the inertia of every factor that is returned. The
-//! `SupernodalLdl` path (Algorithm M) is the one to use for this form.
+//! *Pivoting and the indefinite form (task I08).* The intranodal `LBLᵀ`
+//! runs faer's dense Bunch–Kaufman on each supernode with faer's default
+//! strategy, `PartialDiag` (the `1×1` candidate is the largest remaining
+//! diagonal entry). faer 0.24.4 states one of its tests with `λ` and `σ`
+//! exchanged (Algorithm B′ of Chapter 5.16), but with the diagonal search a
+//! `2×2` pivot has `|e₂₂| ≤ |e₁₁| < α λ`, so `|det E| > (1 − α²) λ²`: the
+//! singular `2×2` pivot of the `Partial` strategy does not arise this way.
+//! What was measured instead (I08, 23 005 random `L₀ Δ₀ L₀ᵀ`): about half
+//! are refused (N3′ or N4), and some return a factor that is not backward
+//! stable — backward error of a solve from `9·10⁻⁵` up — whose inertia is
+//! wrong: 20 of 23 005 with `Indefinite` (with `Augmented` of the true
+//! inertia N4 refuses all 20 with [`KktError::WrongInertia`]); with faer's
+//! `Rook` strategy, whose test is right, 9; Algorithm M, which delays
+//! pivots, gets all of them right. That points at the pivoting restricted
+//! to the columns of a supernode with no delay (a supernode whose block is
+//! singular or nearly so while `K` is not), but the cause was not isolated
+//! inside faer. The factor
+//! is opaque here and nothing corrects it: for [`KktForm::Indefinite`] the
+//! inertia `FaerLdl` returns is not guaranteed. The `SupernodalLdl` path
+//! (Algorithm M, with delays) is the one to use for this form.
 //!
 //! ## Algorithm S (Solve)
 //! `x ← S x`, faer's permuted triangular solves `x ← Pᵀ L⁻ᵀ Δ⁻¹ L⁻¹ P x`
