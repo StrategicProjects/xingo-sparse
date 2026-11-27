@@ -179,7 +179,11 @@ impl From<SparseError> for LuError {
 /// [`KktError::Structure`] carrying the [`SparseError`] of the container
 /// check, so `Eq` is not derived (the [`SparseError::InvalidValue`]
 /// variant holds an `f64`).
+///
+/// `#[non_exhaustive]` since 0.6.0: a `match` outside this crate needs a
+/// wildcard arm, so that a future variant is not a breaking change.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum KktError {
     /// The pattern is not square, or it stores entries on both sides of
     /// the diagonal without being structurally symmetric (invariant (K1)
@@ -202,7 +206,8 @@ pub enum KktError {
         position: usize,
     },
     /// The inertia of the factorization differs from the one the form
-    /// requires (invariant (S6)).
+    /// requires (invariant (S6)). Never raised for
+    /// [`crate::KktForm::Indefinite`], which requires none (S6′).
     WrongInertia {
         /// The inertia of the computed factorization.
         found: crate::Inertia,

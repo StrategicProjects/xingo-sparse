@@ -99,7 +99,10 @@ backend is our own `SupernodalLdl`** — a supernodal LDLᵀ (elimination
 tree, relaxed supernodes, left-looking blocks on dense kernels, exact bump
 counts), generic in the scalar and with no dependency; `FaerLdl`, faer's
 sparse LDLᵀ/LBLᵀ (feature `faer`), remains as an alternative and as the
-oracle of the test suite. Both are ordered by our AMD.
+oracle of the test suite. Both are ordered by our AMD. For a general
+symmetric indefinite matrix whose inertia is the unknown — `A − σI` of a
+shift-invert eigensolver — `KktForm::Indefinite` factorizes it once with
+the pivoted LBLᵀ and reports the inertia instead of checking it.
 
 ```rust
 use xingo_sparse::{Amd, BlockPartition, KktForm, KktSolver, Refinement, Regularization, SupernodalLdl, Triplets};
@@ -121,7 +124,7 @@ let form = KktForm::Augmented { n_primal: n, n_dual: m };
 let solver = SupernodalLdl::<f64>::default(); // the recommended backend; `FaerLdl` is the alternative
 let sym = solver.analyze(&k.pattern(), form, &Amd::default())?; // once per pattern
 let (num, inertia) = solver.factorize(&sym, &k, Regularization::default())?; // every iteration
-assert_eq!(inertia, form.expected_inertia(n + m)); // m positive, n negative pivots
+assert_eq!(Some(inertia), form.expected_inertia(n + m)); // m positive, n negative pivots
 let b = [1.0, 1.0, 1.0, -1.0, -1.0];
 let mut x = [0.0; 5];
 // Refine against the unregularized K: the shifts' bias is removed.

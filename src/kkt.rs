@@ -30,7 +30,12 @@
 //!
 //! * `NormalEquations`: `K = A D Aᵀ` (`N = m`), positive (semi)definite;
 //! * `Augmented { n_primal: n, n_dual: m }`: `K = [−D, Aᵀ; A, 0]`
-//!   (`N = n + m`), the `n` primal unknowns first.
+//!   (`N = n + m`), the `n` primal unknowns first;
+//! * `Indefinite`: any symmetric `K` (`N` from the pattern) whose inertia
+//!   is *unknown*, an output of the factorization rather than a
+//!   requirement — `A − σI` of a shift-invert eigensolver, whose count of
+//!   negative pivots is the number of eigenvalues of `A` below `σ`
+//!   (section "The indefinite form" below; issue #8).
 //!
 //! A [`Regularization`] `(ρ, δ, τ, β, scale)` = (`primal`, `dual`,
 //! `pivot_tol`, `bump`, `scale`) defines the matrix the backend
@@ -77,6 +82,14 @@
 //! sign; listed for ratification in L1.5).
 //!
 //! ## Algorithm K (the regularization policy shared by every backend)
+//! K0′. [Indefinite form; issue #8.] With [`KktForm::Indefinite`] the
+//!     regularization must be none: `ρ = δ = 0` and `τ = None` (the bump
+//!     `β` and the scale are then not read). Otherwise the call fails with
+//!     [`KktError::Structure`] (`SparseError::InvalidValue`). The shifts of
+//!     K2″ are defined block by block and the bumping of K3 needs the
+//!     signs `σ_k`, and this form has neither: [`Regularization::none`] is
+//!     the value to pass. A scalar shift `K − δI` is the caller's (it is
+//!     only a change of `σ` in `A − σI`).
 //! K1. [Validate.] `K` satisfies (S1); it is square, of order `N` equal to
 //!     the form's (`n + m` for the augmented system); its lower triangle
 //!     lies inside the pattern given to the analysis (missing entries are
@@ -126,7 +139,45 @@
 //!     return [`KktError::WrongInertia`]. With `τ = Some`, every pivot has
 //!     the sign `σ_k` by K3, so the check cannot fail: the factor is that
 //!     of a perturbation of `K_reg` with the right inertia, and refinement
-//!     (Algorithm F) measures how far it is from `K`.
+//!     (Algorithm F) measures how far it is from `K`. With
+//!     [`KktForm::Indefinite`] there is nothing to check against
+//!     ([`KktForm::expected_inertia`] is `None`): the counted inertia is
+//!     returned as found, and [`KktError::WrongInertia`] never comes from
+//!     this form. A zero pivot is still an error and never a count:
+//!     if the count has `zero > 0`, the call fails with
+//!     [`KktError::ZeroPivot`] at the original row of the first zero pivot
+//!     (pivot order) — the matrix is singular to working precision, and a
+//!     factor with a zero pivot cannot be solved with.
+//!
+//! ## The indefinite form (issue #8)
+//! *Why.* The declared inertia of `Augmented` is what makes the check of
+//! K4 possible, and for a general symmetric indefinite `K` the inertia is
+//! what the caller wants to learn: the shift-invert of `xingo-statla`
+//! (`count_below(σ)` is the negative count of `A − σI`), a count of
+//! eigenvalues in an interval, a test of local convexity of a QP. Before
+//! this form the caller had to declare a guess, read the inertia out of a
+//! [`KktError::WrongInertia`], and analyze and factorize again.
+//!
+//! *What each step does with it.* K0′ above; K1 checks only that the
+//! pattern is square (the order is the pattern's); K2′ (equilibration) is
+//! the same, since it reads no form; K2″ adds nothing; K3 never runs; K3′
+//! (finite factor) is the same; K4 returns the count, with the zero-pivot
+//! rule above. Every backend factorizes `Indefinite` with its pivoted
+//! `LBLᵀ` (Bunch & Kaufman 1977) — the unregularized path of `Augmented`
+//! — or refuses it with [`KktError::Backend`]; it never falls back to an
+//! unpivoted `LDLᵀ`, which could fail on a nonsingular `K` or, worse,
+//! return a factor of a different matrix.
+//!
+//! *What the inertia is.* (S6′) The inertia returned for `Indefinite` is
+//! the exact inertia of the computed factor `P K Pᵀ ≈ L B Lᵀ`; by
+//! Sylvester's law it is the inertia of `K + E`, with `E` the backward
+//! error of the factorization (to first order `|E| ≤ p(N) u (|K| +
+//! |L||B||Lᵀ|)` for the `LBLᵀ` with Bunch–Kaufman pivots, Higham 2002,
+//! §11.1). It is the inertia of
+//! `K` itself whenever no eigenvalue of `K` lies within `‖E‖₂` of zero; an
+//! eigenvalue of `K` of magnitude below that can be counted with either
+//! sign. This is the limit stated in Chapter 5.17 ("What the scale cannot
+//! do", step M3), and no backend promises more.
 //!
 //! ## Choosing the regularization
 //! Three facts, measured on the 558 Netlib systems of L1.5/L1.5b (93 LPs ×
@@ -332,6 +383,11 @@
 //!      augmented system, or the call fails with
 //!      [`KktError::WrongInertia`]. Asserted on every successful
 //!      factorization in debug builds.
+//! (S6′) For [`KktForm::Indefinite`], [`KktSolver::factorize`] returns the
+//!      inertia of the factor it computed, with `positive + negative = N`
+//!      and `zero = 0` (a zero pivot is [`KktError::ZeroPivot`], step K4);
+//!      it never fails with [`KktError::WrongInertia`]. Asserted in debug
+//!      builds.
 //! (S7) (the contract's) [`KktSolver::solve_refined`] never returns a
 //!      residual larger than that of its first solve: it keeps the best
 //!      iterate (step F4). Asserted in debug builds.
@@ -541,8 +597,12 @@ pub struct RefineReport<T: Real = f64> {
     pub converged: bool,
 }
 
-/// Which system the interior-point method hands over.
+/// Which system the caller hands over.
+///
+/// `#[non_exhaustive]` since 0.6.0: a `match` outside this crate needs a
+/// wildcard arm, so that a future form is not a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KktForm {
     /// `A D Aᵀ + δI`, positive definite.
     NormalEquations,
@@ -554,22 +614,53 @@ pub enum KktForm {
         /// `m`, the order of the `(2,2)` block.
         n_dual: usize,
     },
+    /// A symmetric matrix of unknown inertia (issue #8): always the
+    /// pivoted `LBLᵀ` (Bunch–Kaufman `1×1`/`2×2` pivots; delayed pivots in
+    /// [`crate::SupernodalLdl`]), no regularization
+    /// ([`Regularization::none`]; anything else is
+    /// [`KktError::Structure`], step K0′), and the inertia is *reported*,
+    /// never checked: [`KktSolver::factorize`] returns it and never fails
+    /// with [`KktError::WrongInertia`]. A zero pivot is
+    /// [`KktError::ZeroPivot`] (step K4; invariant (S6′)).
+    ///
+    /// ```
+    /// use xingo_sparse::{Amd, Col, CscMatrix, Inertia, KktForm, KktSolver, Regularization, Row, SupernodalLdl};
+    /// // A − σI for A = diag(1, 2, 3) plus a coupling, σ = 2.5: lower triangle.
+    /// let k = CscMatrix::from_triplets(3, 3, &[
+    ///     (Row(0), Col(0), -1.5), (Row(1), Col(0), 0.5),
+    ///     (Row(1), Col(1), -0.5), (Row(2), Col(2), 0.5),
+    /// ])
+    /// .unwrap();
+    /// let solver = SupernodalLdl::<f64>::default();
+    /// let sym = solver.analyze(&k.pattern(), KktForm::Indefinite, &Amd::default()).unwrap();
+    /// let (_, inertia) = solver.factorize(&sym, &k, Regularization::none()).unwrap();
+    /// // Two eigenvalues of A − σI below zero, one above.
+    /// assert_eq!(inertia, Inertia { positive: 1, negative: 2, zero: 0 });
+    /// assert_eq!(KktForm::Indefinite.expected_inertia(3), None);
+    /// ```
+    Indefinite,
 }
 
 impl KktForm {
-    /// The inertia (S6) requires of a factor of order `n`.
-    pub fn expected_inertia(self, n: usize) -> Inertia {
+    /// The inertia (S6) requires of a factor of order `n`: `Some((n, 0,
+    /// 0))` for the normal equations, `Some((m, n, 0))` for the augmented
+    /// system, and `None` for [`KktForm::Indefinite`], whose inertia is an
+    /// output of the factorization, not a requirement.
+    ///
+    /// *Changed in 0.6.0:* it returned `Inertia`.
+    pub fn expected_inertia(self, n: usize) -> Option<Inertia> {
         match self {
-            Self::NormalEquations => Inertia {
+            Self::NormalEquations => Some(Inertia {
                 positive: n,
                 negative: 0,
                 zero: 0,
-            },
-            Self::Augmented { n_primal, n_dual } => Inertia {
+            }),
+            Self::Augmented { n_primal, n_dual } => Some(Inertia {
                 positive: n_dual,
                 negative: n_primal,
                 zero: 0,
-            },
+            }),
+            Self::Indefinite => None,
         }
     }
 }
@@ -635,7 +726,7 @@ impl<T: Real> ConditionEstimate<T> {
 /// let solver = SupernodalLdl::<f64>::default(); // recommended; FaerLdl is the alternative
 /// let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
 /// let (num, inertia) = solver.factorize(&sym, &k, Regularization::default()).unwrap();
-/// assert_eq!(inertia, form.expected_inertia(3)); // (S6): 1 positive, 2 negative
+/// assert_eq!(Some(inertia), form.expected_inertia(3)); // (S6): 1 positive, 2 negative
 /// let b = [1.0, 0.0, 3.0];
 /// let mut x = [0.0; 3];
 /// let report = solver.solve_refined(&num, &k, &b, &mut x, Refinement::default());
@@ -658,7 +749,8 @@ pub trait KktSolver<T: Real> {
 
     /// Numeric phase on the lower triangle of `k` (inside the analyzed
     /// pattern) with regularization (Algorithm K); returns the factor and
-    /// its inertia (S6).
+    /// its inertia: the form's (S6), or, for [`KktForm::Indefinite`], the
+    /// one found (S6′).
     fn factorize(
         &self,
         symbolic: &Self::Symbolic,
@@ -1267,14 +1359,40 @@ pub(crate) fn check_regularization<T: Real>(reg: &Regularization<T>) -> Result<(
     Ok(())
 }
 
+/// Step K0′: [`KktForm::Indefinite`] takes no regularization (`ρ = δ = 0`,
+/// `τ = None`); the other forms take any that [`check_regularization`]
+/// accepts.
+pub(crate) fn check_form_regularization<T: Real>(
+    form: KktForm,
+    reg: &Regularization<T>,
+) -> Result<(), KktError> {
+    if form == KktForm::Indefinite {
+        let bad = [
+            (!is_exact_zero(reg.primal)).then(|| reg.primal.to_f64()),
+            (!is_exact_zero(reg.dual)).then(|| reg.dual.to_f64()),
+            reg.pivot_tol.map(Real::to_f64),
+        ];
+        if let Some(value) = bad.into_iter().flatten().next() {
+            return Err(KktError::Structure(SparseError::InvalidValue {
+                what: "regularization with KktForm::Indefinite (pass Regularization::none())",
+                index: 0,
+                value,
+            }));
+        }
+    }
+    Ok(())
+}
+
 /// The pivot signs `σ_k` of step K3: `−1` on the primal rows, `+1` on the
-/// dual rows (all `+1` for the normal equations).
+/// dual rows (all `+1` for the normal equations). [`KktForm::Indefinite`]
+/// has no signs (`0`): it is never bumped (K0′ forbids `τ`).
 pub(crate) fn pivot_signs(form: KktForm, n: usize) -> Vec<i8> {
     match form {
         KktForm::NormalEquations => vec![1; n],
         KktForm::Augmented { n_primal, .. } => {
             (0..n).map(|k| if k < n_primal { -1 } else { 1 }).collect()
         }
+        KktForm::Indefinite => vec![0; n],
     }
 }
 
@@ -1302,6 +1420,8 @@ pub(crate) fn assemble_regularized<T: Real>(
                     reg.dual
                 }
             }
+            // K0′: no shift (checked before the assembly).
+            KktForm::Indefinite => T::ZERO,
         };
         if !is_exact_zero(shift) {
             // The diagonal is the first entry of column j of l.
@@ -1455,13 +1575,53 @@ fn pow2_round<T: Real>(x: T) -> T {
     T::from_f64(x.to_f64().log2().round().exp2())
 }
 
-/// Step K4: the (S6) check.
-pub(crate) fn check_inertia(found: Inertia, expected: Inertia) -> Result<Inertia, KktError> {
-    if found == expected {
-        Ok(found)
-    } else {
-        Err(KktError::WrongInertia { found, expected })
+/// Step K4: the (S6) check against the form's inertia, or, for
+/// [`KktForm::Indefinite`], the count itself unless it has a zero pivot
+/// (S6′) — then [`KktError::ZeroPivot`] at `first_zero()`, the original row
+/// of the first zero pivot, which the backend locates (only called then).
+pub(crate) fn check_inertia(
+    found: Inertia,
+    form: KktForm,
+    n: usize,
+    first_zero: impl FnOnce() -> usize,
+) -> Result<Inertia, KktError> {
+    match form.expected_inertia(n) {
+        Some(expected) if found == expected => Ok(found),
+        Some(expected) => Err(KktError::WrongInertia { found, expected }),
+        None if found.zero > 0 => Err(KktError::ZeroPivot {
+            position: first_zero(),
+        }),
+        None => Ok(found),
     }
+}
+
+/// The index (in the order given) of the first zero pivot of a list of
+/// `1×1` pivots and `2×2` blocks, as [`count_inertia`] counts them: a
+/// `1×1` pivot equal to zero, or a `2×2` block with a zero determinant
+/// (whose first column is returned). `pivots[k]` is the diagonal of pivot
+/// `k`; `pair_first(k)` is `Some(b)` when `k` is the first column of a
+/// `2×2` block `[pivots[k] b; b pivots[k + 1]]`, `None` for a `1×1` pivot.
+/// The determinant is computed as [`count_inertia`] computes it, so the
+/// two agree on which blocks are zero.
+pub(crate) fn first_zero_pivot<T: Real>(
+    pivots: &[T],
+    pair_first: impl Fn(usize) -> Option<T>,
+) -> Option<usize> {
+    let mut k = 0;
+    while k < pivots.len() {
+        if let Some(b) = pair_first(k) {
+            if is_exact_zero(pivots[k] * pivots[k + 1] - b * b) {
+                return Some(k);
+            }
+            k += 2;
+        } else {
+            if is_exact_zero(pivots[k]) {
+                return Some(k);
+            }
+            k += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1552,14 +1712,14 @@ mod tests {
                 zero: 1
             }
         );
-        let expected = KktForm::Augmented {
+        let form = KktForm::Augmented {
             n_primal: 2,
             n_dual: 3,
-        }
-        .expected_inertia(5);
+        };
+        let expected = form.expected_inertia(5).unwrap();
         assert_eq!(expected.positive, 3);
         assert_eq!(expected.negative, 2);
-        assert!(check_inertia(s, expected).is_err());
+        assert!(check_inertia(s, form, 5, || unreachable!()).is_err());
     }
 
     #[test]

@@ -63,6 +63,21 @@
 //!       Bunch–Kaufman, whose interchanges stay inside each supernode (the
 //!       analyzed structure does not change). With a simplicial structure
 //!       faer has no pivoted kernel, and the `LDLᵀ` path runs instead.
+//!     * [`KktForm::Indefinite`] (issue #8; no regularization, step K0′ of
+//!       Chapter 5.14) takes the `LBLᵀ` path when the structure is
+//!       supernodal. With a simplicial structure it is refused with
+//!       [`KktError::Backend`] *before* any factorization: the `LDLᵀ`
+//!       fallback of the augmented system is no `LBLᵀ` (it fails on a
+//!       nonsingular `K` with a zero diagonal), and faer's simplicial
+//!       `LBLᵀ` accepts a zero pivot in silence (D-0094). Force the
+//!       supernodal structure ([`FaerLdl::supernodal`] `= Some(true)`) or
+//!       use [`crate::SupernodalLdl`], which is the recommended backend for
+//!       this form: faer's Bunch–Kaufman has no relative zero-pivot test
+//!       (step M3 of Chapter 5.17), so a `K` singular to working precision
+//!       can come back as a factor with huge entries rather than an error.
+//!       What is checked here: the structure of `K` (step M7 of Chapter
+//!       5.17, a maximum matching: a structurally singular `K` is
+//!       [`KktError::ZeroPivot`]), (S10) and an exact zero pivot (S6′).
 //! N3. Read the pivots — the diagonal of `Δ` (first entry of each column
 //!     of the simplicial `L`; diagonal of each supernode's dense block),
 //!     plus the subdiagonal of `B` for the `2×2` blocks of `LBLᵀ` — and
@@ -76,7 +91,11 @@
 //!     `B`) is not finite, fail with [`KktError::NotFinite`] at the
 //!     original row `fwd[k]` of the first such column `k`.
 //! N4. (S6): fail with [`KktError::WrongInertia`] unless the inertia is the
-//!     one the form requires.
+//!     one the form requires. For [`KktForm::Indefinite`] (S6′): the count
+//!     is returned, unless it has a zero pivot — then
+//!     [`KktError::ZeroPivot`] at the original row of the first one, `fwd[q[k]]`
+//!     with `q` faer's intranodal pivoting permutation — and unless `K` is
+//!     structurally singular (step M7 of Chapter 5.17).
 //!
 //! ## Algorithm S (Solve)
 //! `x ← S x`, faer's permuted triangular solves `x ← Pᵀ L⁻ᵀ Δ⁻¹ L⁻¹ P x`
@@ -107,8 +126,16 @@
 //! (F2) `nnz_factor` is faer's stored length of `L` (diagonal included;
 //!      for the supernodal structure, the dense supernodal blocks with
 //!      their explicit zeros).
-//! (S6) as in Chapter 5.14, checked in step N4 and asserted in debug
-//!      builds.
+//! (S6), (S6′) as in Chapter 5.14, checked in step N4 and asserted in
+//!      debug builds.
+//! (F3) With [`Regularization::none`], when [`KktForm::Indefinite`]
+//!      succeeds with the inertia `i`, its factor is bit for bit that of
+//!      `Augmented { n_primal: i.negative, n_dual: i.positive }` (as (L11)
+//!      of Chapter 5.17): both take the same `LBLᵀ` on the same assembled
+//!      values. The converse differs from Chapter 5.17: the augmented path
+//!      here has no structural check, so on a structurally singular `K` it
+//!      can return a factor where `Indefinite` returns
+//!      [`KktError::ZeroPivot`].
 //!
 //! ## What was read
 //! faer 0.24.4, `sparse::linalg::cholesky` (the public API and its
@@ -138,10 +165,11 @@ use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side, Spec};
 
 use crate::kkt::{
-    assemble_regularized, check_inertia, check_regularization, count_inertia, lower_with_diagonal,
-    pivot_signs,
+    assemble_regularized, check_form_regularization, check_inertia, check_regularization,
+    count_inertia, first_zero_pivot, lower_with_diagonal, pivot_signs,
 };
 use crate::real::{Real, approx_eq, is_exact_zero};
+use crate::supernodal::structural_deficiency;
 use crate::{
     CscMatrix, Inertia, KktError, KktForm, KktSolver, Ordering, OrderingTarget, Pattern, Perm,
     Regularization, SparseError,
@@ -501,6 +529,15 @@ impl KktSolver<f64> for FaerLdl {
         let sym = &*symbolic.faer;
         let n = symbolic.lower.n_cols();
         check_regularization(&reg)?;
+        // K0′.
+        check_form_regularization(form, &reg)?;
+        let supernodal = matches!(sym.raw(), SymbolicCholeskyRaw::Supernodal(_));
+        if form == KktForm::Indefinite && !supernodal {
+            return Err(KktError::Backend(
+                "KktForm::Indefinite needs a supernodal structure \
+                 (FaerLdl { supernodal: Some(true) }); or use SupernodalLdl",
+            ));
+        }
         // N1.
         let (v, scale) = assemble_regularized(&symbolic.lower, form, k, &reg)?;
         let a = SparseColMatRef::new(
@@ -514,11 +551,11 @@ impl KktSolver<f64> for FaerLdl {
             &v,
         );
         let mut values = vec![0.0_f64; sym.len_val()];
-        let supernodal = matches!(sym.raw(), SymbolicCholeskyRaw::Supernodal(_));
         // N2.
-        let use_lblt = matches!(form, KktForm::Augmented { .. })
-            && !reg.is_quasi_definite()
-            && reg.pivot_tol.is_none()
+        let use_lblt = (form == KktForm::Indefinite
+            || (matches!(form, KktForm::Augmented { .. })
+                && !reg.is_quasi_definite()
+                && reg.pivot_tol.is_none()))
             && supernodal;
         let (lblt, d, twos, faer_bumps) = if use_lblt {
             let (lblt, ones, twos) = factor_lblt(sym, a, &mut values)?;
@@ -618,10 +655,30 @@ impl KktSolver<f64> for FaerLdl {
         }
         // N3.
         let bumped = faer_bumps;
-        let found = count_inertia(d.into_iter(), twos.into_iter());
-        // N4 (S6).
-        let inertia = check_inertia(found, form.expected_inertia(n))?;
-        debug_assert_eq!(inertia, form.expected_inertia(n), "(S6)");
+        let found = count_inertia(d.iter().copied(), twos.into_iter());
+        // N4 (S6), (S6′).
+        let inertia = check_inertia(found, form, n, || {
+            let b = lblt.as_ref().expect("Indefinite takes the LBLᵀ path");
+            // Every pivot in pivot order (`d` holds the 1×1 ones only).
+            let all = pivots(sym, &values);
+            let z = first_zero_pivot(&all, |c| {
+                (c + 1 < n && !is_exact_zero(b.subdiag[c])).then(|| b.subdiag[c])
+            })
+            .expect("a zero in the count is a zero pivot");
+            symbolic.perm.fwd[b.fwd[z]] as usize
+        })?;
+        if form == KktForm::Indefinite
+            && let Some(c) = structural_deficiency(k)
+        {
+            return Err(KktError::ZeroPivot { position: c });
+        }
+        debug_assert!(
+            form.expected_inertia(n) == Some(inertia)
+                || (form == KktForm::Indefinite
+                    && inertia.zero == 0
+                    && inertia.positive + inertia.negative == n),
+            "(S6), (S6′)"
+        );
         Ok((
             FaerNumeric {
                 faer: Arc::clone(&symbolic.faer),
@@ -800,7 +857,7 @@ mod tests {
             for sn in [None, Some(true), Some(false)] {
                 let (i, res, _) =
                     solve_ok(&aug, form, Regularization::default(), sn, &rhs(42, seed));
-                assert_eq!(i, form.expected_inertia(42));
+                assert_eq!(Some(i), form.expected_inertia(42));
                 assert!(le(res, 1e-10, 0.0), "aug seed {seed} sn {sn:?}: {res}");
                 let (i, res, _) = solve_ok(
                     &normal,
@@ -809,7 +866,7 @@ mod tests {
                     sn,
                     &rhs(12, seed),
                 );
-                assert_eq!(i, KktForm::NormalEquations.expected_inertia(12));
+                assert_eq!(Some(i), KktForm::NormalEquations.expected_inertia(12));
                 assert!(le(res, 1e-10, 0.0), "normal seed {seed} sn {sn:?}: {res}");
             }
         }
@@ -824,7 +881,7 @@ mod tests {
         let sym = s.analyze(&aug.pattern(), form, &Natural).unwrap();
         let (num, inertia) = s.factorize(&sym, &aug, Regularization::none()).unwrap();
         assert!(num.is_pivoted());
-        assert_eq!(inertia, form.expected_inertia(35));
+        assert_eq!(Some(inertia), form.expected_inertia(35));
         let b = rhs(35, 9);
         let mut x = vec![0.0; 35];
         let rep = s.solve_refined(&num, &aug, &b, &mut x, Refinement::default());
@@ -864,7 +921,7 @@ mod tests {
                 Regularization::default(),
             )
             .unwrap();
-        assert_eq!(inertia, form.expected_inertia(2));
+        assert_eq!(Some(inertia), form.expected_inertia(2));
         // Indefinite "normal equations": wrong inertia without bumping,
         // the expected one (with bumps) with it.
         let ind = CscMatrix::from_triplets(
@@ -1044,7 +1101,7 @@ mod tests {
             let s = FaerLdl { supernodal: sn };
             let sym = s.analyze(&k.pattern(), form, &Natural).unwrap();
             let (num, inertia) = s.factorize(&sym, &k, reg).unwrap();
-            assert_eq!(inertia, form.expected_inertia(2));
+            assert_eq!(Some(inertia), form.expected_inertia(2));
             assert_eq!(num.bumped(), 1, "{sn:?}");
             let sym = s
                 .analyze(&z.pattern(), KktForm::NormalEquations, &Natural)
@@ -1172,10 +1229,10 @@ mod tests {
             let supernodal = [None, Some(true), Some(false)][sn];
             let (aug, normal, form) = kkt(m, n, spread, seed);
             let (i, res, _) = solve_ok(&aug, form, Regularization::default(), supernodal, &rhs(n + m, seed));
-            prop_assert_eq!(i, form.expected_inertia(n + m));
+            prop_assert_eq!(Some(i), form.expected_inertia(n + m));
             prop_assert!(le(res, 1e-10, 0.0), "augmented: {}", res);
             let (i, _, _) = solve_ok(&normal, KktForm::NormalEquations, Regularization::default(), supernodal, &rhs(m, seed));
-            prop_assert_eq!(i, KktForm::NormalEquations.expected_inertia(m));
+            prop_assert_eq!(Some(i), KktForm::NormalEquations.expected_inertia(m));
         }
     }
 }

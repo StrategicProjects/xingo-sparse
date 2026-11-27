@@ -83,7 +83,10 @@ fn step<S: KktSolver<f64>>(
     let (num, inertia) = solver
         .factorize(sym, &k, Regularization::default())
         .expect("quasi-definite after regularization");
-    let expected = prob.form.expected_inertia(k.n_cols());
+    let expected = prob
+        .form
+        .expected_inertia(k.n_cols())
+        .expect("the augmented form declares its inertia");
     println!(
         "{label}: D = {d:?}\n  inertia (+, −, 0) = ({}, {}, {}), expected ({}, {}, {}); {} pivot(s) bumped; nnz(L) = {}",
         inertia.positive,
@@ -120,7 +123,7 @@ fn unregularized_step(
     let (num, inertia) = own
         .factorize(sym, &k, Regularization::none())
         .expect("nonsingular: A has full row rank");
-    assert_eq!(inertia, prob.form.expected_inertia(k.n_cols()));
+    assert_eq!(Some(inertia), prob.form.expected_inertia(k.n_cols()));
     let mut x = vec![0.0; prob.b.len()];
     let rep = own.solve_refined(&num, &k, prob.b, &mut x, Refinement::default());
     println!(

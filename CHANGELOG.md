@@ -5,6 +5,46 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [Unreleased]
+
+### Added
+
+* `KktForm::Indefinite` (issue
+  [#8](https://github.com/StrategicProjects/xingo-sparse/issues/8)): a
+  symmetric matrix of unknown inertia. `factorize` takes the pivoted
+  `LBLᵀ` (Algorithm M of `SupernodalLdl`; faer's intranodal Bunch–Kaufman
+  in `FaerLdl`, supernodal structure only), with no regularization, and
+  *reports* the inertia it finds instead of checking it: it never fails
+  with `WrongInertia`. A zero pivot is `ZeroPivot`; any regularization
+  other than `Regularization::none()` is `Structure`. With
+  `Regularization::none()` the factor equals, bit for bit, the factor of
+  `Augmented { n_primal: i.negative, n_dual: i.positive }` (`i` the
+  inertia found): a caller that factorized twice to learn the inertia now
+  factorizes once, with the same results. `FaerLdl` refuses the form on a
+  simplicial structure (`Backend`) and checks the structure of `K` (a
+  structurally singular `K` is `ZeroPivot`).
+
+### Changed (breaking)
+
+* `KktForm::expected_inertia` returns `Option<Inertia>`: `Some` for
+  `NormalEquations` and `Augmented` (the values of 0.5), `None` for
+  `Indefinite`.
+* `KktForm` and `KktError` are `#[non_exhaustive]`: a `match` on them
+  outside this crate needs a wildcard arm (so that a later variant is not
+  a breaking change).
+
+Migration:
+
+```text
+form.expected_inertia(n)            ->  form.expected_inertia(n) (an Option)
+assert_eq!(inertia, form.expected_inertia(n))
+                                    ->  assert_eq!(Some(inertia), form.expected_inertia(n))
+match form { NormalEquations => .., Augmented { .. } => .. }
+                                    ->  add `_ => ..` (also for `match` on `KktError`)
+try Augmented, refactor on WrongInertia { found }
+                                    ->  KktForm::Indefinite with Regularization::none(), once
+```
+
 ## [0.5.0] — 2026-11-19
 
 ### Added

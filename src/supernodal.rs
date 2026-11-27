@@ -159,7 +159,8 @@
 //!     fails with [`KktError::NotFinite`] at the original row of the first
 //!     column holding a NaN or an infinity (step K3′).
 //! N6. (S6) The inertia is the count of signs of `Δ̂` (= of `Δ`, step K4;
-//!     [`KktError::WrongInertia`] unless it is the form's). With
+//!     [`KktError::WrongInertia`] unless it is the form's; Algorithm N never
+//!     sees [`KktForm::Indefinite`], which always takes Algorithm M). With
 //!     `τ = Some`, every pivot has its sign `σ_k` by construction and the
 //!     check cannot fail. The factor also allocates its work vector for
 //!     Algorithm S (`N` scalars).
@@ -219,6 +220,11 @@
 //! columns (no panels, no kernel).
 //!
 //! ## Algorithm M (`LBLᵀ` of the unregularized augmented system)
+//! *Which systems take it.* [`KktForm::Indefinite`] always (with no
+//! regularization, step K0′ of Chapter 5.14; issue #8), and
+//! [`KktForm::Augmented`] when `ρ = 0` or `δ = 0`, and `τ = None` (the
+//! rule of Chapter 5.15, step N2). The normal equations never do.
+//!
 //! *Task L1.6b.* An augmented system without regularization (`ρ = 0` or
 //! `δ = 0`, and `τ = None`: the rule of Chapter 5.15, step N2) is
 //! indefinite but not quasi-definite: its dual diagonal is zero, so a dual
@@ -396,7 +402,11 @@
 //!     about linear in practice.
 //! Then steps N4–N6 as before (`e₂₁` is an entry of `Δ`: `ê₂₁ = e₂₁ /
 //! (s_k s_{k+1})`; the inertia counts `+1 −1` for a `2×2` block with
-//! `det E < 0`, step K4), and the rows of every block are remapped by
+//! `det E < 0`, step K4; for [`KktForm::Indefinite`] N6 returns the count
+//! unchecked, and a count with `zero > 0` is [`KktError::ZeroPivot`] at the
+//! first zero pivot in pivot order — not expected after M3, which removes
+//! every pivot it judges zero, but not proved impossible either, so it is
+//! checked, never assumed), and the rows of every block are remapped by
 //! `pos` for the solve. [`NumericLdl::perm`] is `fwd′`,
 //! [`NumericLdl::supernodes`] the block boundaries in pivot order,
 //! [`NumericLdl::rows`] the rows of a block below its diagonal block,
@@ -435,6 +445,20 @@
 //! pivot costs little (it finds a `2×2` partner in the parent), while
 //! relaxing a guard against small pivots without a measurement is what
 //! made the Forrest–Tomlin update lose accuracy (Chapter 5.5, step U4′).
+//!
+//! *What the form changes in Algorithm M (issue #8).* Nothing but the last
+//! check. M1–M7 read neither the form nor the pivot signs: the form enters
+//! the `LBLᵀ` path in three places only — the order check of step A1
+//! (`n_primal + n_dual = N` for `Augmented`; the analysis is otherwise
+//! independent of the form, so the two forms give the same symbolic
+//! factor), the static shifts of step N1 (zero with
+//! [`Regularization::none`]: an exact `±0` that the assembly skips), and
+//! the check of step N6. Hence invariant (L11) below, which is what the
+//! tests of the indefinite form compare against. *Order of the errors.*
+//! For `Augmented`, N6 runs before M7, so a structurally singular `K` with
+//! the wrong inertia reports [`KktError::WrongInertia`]; for `Indefinite`
+//! N6 has nothing to refuse (but a zero pivot) and M7 reports
+//! [`KktError::ZeroPivot`]. Every other error is the same for both forms.
 //!
 //! ## Algorithm S (Solve)
 //! `y ← P x` gathered into the factor's work vector (`y_k = x_{fwd[k]}`;
@@ -528,7 +552,16 @@
 //!      kernel path and the simplicial path record the same terms, so the
 //!      verdict of M3 on a column does not depend on the path (the test
 //!      `cancelled_updates_on_the_kernel_path_are_a_zero_pivot`).
-//! (S6), (S10) as in Chapter 5.14, checked in steps N4–N5 and asserted in
+//! (L11) With [`Regularization::none`], the factor of
+//!      [`KktForm::Indefinite`] equals bit for bit the factor of
+//!      `Augmented { n_primal: i.negative, n_dual: i.positive }` on the same
+//!      pattern, ordering and options, `i` the inertia the first returned:
+//!      the second succeeds with the same inertia, the same pivot order,
+//!      the same blocks and pivots (the test
+//!      `indefinite_is_augmented_with_the_found_inertia_bit_for_bit`). And
+//!      when `Augmented` fails with `WrongInertia { found }`, `found.zero =
+//!      0`, `Indefinite` returns `found` or [`KktError::ZeroPivot`] (M7).
+//! (S6), (S6′), (S10) as in Chapter 5.14, checked in steps N4–N5 and asserted in
 //!      debug builds. [`SymbolicLdl::check_invariants`] checks (L1)–(L4);
 //!      the test `kkt_no_alloc` checks (L5) with a counting allocator (0
 //!      allocations in the first and the second solve, with a clone of
@@ -581,8 +614,8 @@ use std::sync::{Arc, Mutex};
 use crate::dense::dot4 as dot;
 use crate::factor::count_f64;
 use crate::kkt::{
-    assemble_regularized, check_inertia, check_regularization, count_inertia, lower_with_diagonal,
-    pivot_signs,
+    assemble_regularized, check_form_regularization, check_inertia, check_regularization,
+    count_inertia, first_zero_pivot, lower_with_diagonal, pivot_signs,
 };
 use crate::perm::{etree_counts, idx32};
 use crate::real::{Real, is_exact_zero, le, le_exact, lt};
@@ -1036,7 +1069,7 @@ impl<T: Real> NumericLdl<T> {
 /// let solver = SupernodalLdl::<f64>::default(); // NaiveDense kernels, no dependency
 /// let sym = solver.analyze(&k.pattern(), form, &Amd::default()).unwrap();
 /// let (num, inertia) = solver.factorize(&sym, &k, Regularization::default()).unwrap();
-/// assert_eq!(inertia, form.expected_inertia(3)); // (S6): 1 positive, 2 negative
+/// assert_eq!(Some(inertia), form.expected_inertia(3)); // (S6): 1 positive, 2 negative
 /// let b = [1.0, 0.0, 3.0];
 /// let mut x = [0.0; 3];
 /// let report = solver.solve_refined(&num, &k, &b, &mut x, Refinement::default());
@@ -2026,7 +2059,7 @@ fn update_lblt_scalar<T: Real>(
 /// polynomial in the entries, so `K` is singular whatever their values.
 /// Depth-first augmenting paths with lookahead after a cheap assignment
 /// (Duff 1981, MC21), iterative; `O(N · nnz)` in the worst case.
-fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
+pub(crate) fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
     let n = k.n_rows;
     let none = usize::MAX;
     // The adjacency of the symmetric pattern (nonzero entries only).
@@ -2128,7 +2161,8 @@ fn structural_deficiency<T: Real>(k: &CscMatrix<T>) -> Option<usize> {
 }
 
 impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
-    /// Algorithm M: the `LBLᵀ` of the unregularized augmented system.
+    /// Algorithm M: the `LBLᵀ` of the unregularized augmented system and
+    /// of the indefinite form.
     #[allow(clippy::too_many_lines)] // steps M1–M6 and N4–N6 in order, as in the chapter
     fn factorize_lblt(
         &self,
@@ -2413,7 +2447,26 @@ impl<T: Real, K: DenseKernel<T>> SupernodalLdl<T, K> {
             }
         }
         let found = count_inertia(ones.into_iter(), twos.into_iter());
-        let inertia = check_inertia(found, symbolic.form.expected_inertia(n))?;
+        let inertia = check_inertia(found, symbolic.form, n, || {
+            let z = first_zero_pivot(&diag, |c| {
+                first[c].then(|| {
+                    // The block holding pivot c (the last start at or
+                    // before c: an empty block shares its start).
+                    let s = starts.partition_point(|&b| b as usize <= c) - 1;
+                    let local = c - starts[s] as usize;
+                    blocks[s].data[local + 1 + local * blocks[s].rows]
+                })
+            })
+            .expect("a zero in the count is a zero pivot");
+            fwd_new[z] as usize
+        })?;
+        debug_assert!(
+            symbolic.form.expected_inertia(n) == Some(inertia)
+                || (symbolic.form == KktForm::Indefinite
+                    && inertia.zero == 0
+                    && inertia.positive + inertia.negative == n),
+            "(S6), (S6′)"
+        );
         // M7: a structurally singular K is singular, whatever M3 decided.
         if let Some(c) = structural_deficiency(k) {
             return Err(KktError::ZeroPivot { position: c });
@@ -2862,11 +2915,15 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
         reg: Regularization<T>,
     ) -> Result<(NumericLdl<T>, Inertia), KktError> {
         check_regularization(&reg)?;
-        // Algorithm M for the unregularized augmented system (the rule of
-        // Chapter 5.15, step N2); Algorithm N otherwise.
-        if matches!(symbolic.form, KktForm::Augmented { .. })
-            && !reg.is_quasi_definite()
-            && reg.pivot_tol.is_none()
+        // K0′.
+        check_form_regularization(symbolic.form, &reg)?;
+        // Algorithm M for the indefinite form and for the unregularized
+        // augmented system (the rule of Chapter 5.15, step N2); Algorithm N
+        // otherwise.
+        if symbolic.form == KktForm::Indefinite
+            || (matches!(symbolic.form, KktForm::Augmented { .. })
+                && !reg.is_quasi_definite()
+                && reg.pivot_tol.is_none())
         {
             return self.factorize_lblt(symbolic, k, &reg);
         }
@@ -2990,8 +3047,9 @@ impl<T: Real, K: DenseKernel<T>> KktSolver<T> for SupernodalLdl<T, K> {
         }
         // N6 (S6).
         let found = count_inertia(diag.iter().copied(), core::iter::empty::<(T, T, T)>());
-        let inertia = check_inertia(found, symbolic.form.expected_inertia(n))?;
-        debug_assert_eq!(inertia, symbolic.form.expected_inertia(n), "(S6)");
+        // Algorithm N never sees the indefinite form (the dispatch above).
+        let inertia = check_inertia(found, symbolic.form, n, || unreachable!("(S6)"))?;
+        debug_assert_eq!(Some(inertia), symbolic.form.expected_inertia(n), "(S6)");
         let scratch = SolveScratch::new(n, &blocks);
         Ok((
             NumericLdl {
@@ -3187,7 +3245,7 @@ mod tests {
                 let s = Naive::new(NaiveDense, opts);
                 let (i, res, _, _) =
                     solve_ok(&s, &aug, form, Regularization::default(), &rhs(42, seed));
-                assert_eq!(i, form.expected_inertia(42));
+                assert_eq!(Some(i), form.expected_inertia(42));
                 assert!(le(res, 1e-10, 0.0), "aug seed {seed} {opts:?}: {res}");
                 let (i, res, _, _) = solve_ok(
                     &s,
@@ -3196,7 +3254,7 @@ mod tests {
                     Regularization::default(),
                     &rhs(12, seed),
                 );
-                assert_eq!(i, KktForm::NormalEquations.expected_inertia(12));
+                assert_eq!(Some(i), KktForm::NormalEquations.expected_inertia(12));
                 assert!(le(res, 1e-10, 0.0), "normal seed {seed} {opts:?}: {res}");
             }
         }
@@ -3278,7 +3336,7 @@ mod tests {
             let s = Naive::new(NaiveDense, opts);
             let sym = s.analyze(&k.pattern(), form, &Natural).unwrap();
             let (num, inertia) = s.factorize(&sym, &k, reg).unwrap();
-            assert_eq!(inertia, form.expected_inertia(2));
+            assert_eq!(Some(inertia), form.expected_inertia(2));
             assert_eq!(num.bumped, 1, "{opts:?}");
             let sym = s
                 .analyze(&z.pattern(), KktForm::NormalEquations, &Natural)
@@ -3312,7 +3370,7 @@ mod tests {
             let s = Naive::new(NaiveDense, opts);
             let sym = s.analyze(&zeroed.pattern(), form, &Amd::default()).unwrap();
             let (num, inertia) = s.factorize(&sym, &zeroed, reg).unwrap();
-            assert_eq!(inertia, form.expected_inertia(55));
+            assert_eq!(Some(inertia), form.expected_inertia(55));
             let by_value = num
                 .diag
                 .iter()
@@ -3342,7 +3400,7 @@ mod tests {
             Some(KktError::ZeroPivot { position: 1 })
         );
         let (_, inertia) = s.factorize(&sym, &k, Regularization::default()).unwrap();
-        assert_eq!(inertia, form.expected_inertia(2));
+        assert_eq!(Some(inertia), form.expected_inertia(2));
         // Indefinite "normal equations": wrong inertia without bumping,
         // the expected one (with a bump) with it.
         let ind = CscMatrix::from_triplets(
@@ -3538,7 +3596,7 @@ mod tests {
                 let (num, inertia) = s
                     .factorize(&sym, &k, Regularization::<f32>::default())
                     .unwrap();
-                assert_eq!(inertia, form.expected_inertia(n));
+                assert_eq!(Some(inertia), form.expected_inertia(n));
                 let xs: Vec<f32> = (0..n)
                     .map(|i| if i % 2 == 0 { 1.0 } else { -0.5 })
                     .collect();
@@ -3793,7 +3851,11 @@ mod tests {
                     }
                     let (num, inertia) = factor
                         .unwrap_or_else(|e| panic!("seed {seed} {opts:?} {}: {e:?}", ord.name()));
-                    assert_eq!(inertia, form.expected_inertia(nn), "seed {seed} {opts:?}");
+                    assert_eq!(
+                        Some(inertia),
+                        form.expected_inertia(nn),
+                        "seed {seed} {opts:?}"
+                    );
                     assert!(num.is_pivoted() && num.bumped == 0);
                     assert_eq!(num.perm().check_invariants(), Ok(()));
                     assert_eq!(num.supernodes().len(), num.n_supernodes() + 1);
@@ -3853,7 +3915,7 @@ mod tests {
             let s = Naive::new(NaiveDense, opts);
             let sym = s.analyze(&k.pattern(), form, &duals_first(3, 5)).unwrap();
             let (num, inertia) = s.factorize(&sym, &k, Regularization::none()).unwrap();
-            assert_eq!(inertia, form.expected_inertia(5));
+            assert_eq!(Some(inertia), form.expected_inertia(5));
             assert!(num.delayed() >= 1, "{opts:?}: {}", num.delayed());
             assert!(le(reconstruction_error(&num, &k), 1e-12, 0.0));
             let b = [1.0, 2.0, 3.0, 4.0, 5.0];
@@ -4053,7 +4115,7 @@ mod tests {
             let (num, inertia) = s
                 .factorize(&sym, &k, Regularization::<f32>::none())
                 .unwrap();
-            assert_eq!(inertia, form.expected_inertia(28));
+            assert_eq!(Some(inertia), form.expected_inertia(28));
             assert!(num.is_pivoted());
             let xs: Vec<f32> = (0..28)
                 .map(|i| if i % 2 == 0 { 1.0 } else { -0.5 })
@@ -4231,7 +4293,7 @@ mod tests {
             let s = Naive::new(NaiveDense, variants()[v]);
             let (aug, normal, form) = kkt(m, n, spread, seed);
             let (i, res, _, _) = solve_ok(&s, &aug, form, Regularization::default(), &rhs(n + m, seed));
-            prop_assert_eq!(i, form.expected_inertia(n + m));
+            prop_assert_eq!(Some(i), form.expected_inertia(n + m));
             prop_assert!(le(res, 1e-10, 0.0), "augmented: {}", res);
             if regime == 2 {
                 // Near the end of an interior-point method the unregularized
@@ -4245,7 +4307,7 @@ mod tests {
                 }
             } else if full_row_rank(&aug, n) {
                 let (i, res, _, _) = solve_ok(&s, &aug, form, Regularization::none(), &rhs(n + m, seed));
-                prop_assert_eq!(i, form.expected_inertia(n + m));
+                prop_assert_eq!(Some(i), form.expected_inertia(n + m));
                 prop_assert!(le(res, 1e-10, 0.0), "augmented, LBLᵀ: {}", res);
             } else {
                 let sym = s.analyze(&aug.pattern(), form, &Amd::default()).unwrap();
@@ -4253,7 +4315,7 @@ mod tests {
                 prop_assert!(matches!(singular, Err(KktError::ZeroPivot { .. } | KktError::WrongInertia { .. })), "rank-deficient A: {:?}", singular.map(|(_, i)| i));
             }
             let (i, _, _, _) = solve_ok(&s, &normal, KktForm::NormalEquations, Regularization::default(), &rhs(m, seed));
-            prop_assert_eq!(i, KktForm::NormalEquations.expected_inertia(m));
+            prop_assert_eq!(Some(i), KktForm::NormalEquations.expected_inertia(m));
         }
     }
 }
