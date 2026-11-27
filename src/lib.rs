@@ -267,6 +267,8 @@ pub mod vector;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_indefinite;
 
 /// The code blocks of the crate's README, compiled and run as doc-tests
 /// (`cargo test --doc`) so that the README never drifts from the API. The
