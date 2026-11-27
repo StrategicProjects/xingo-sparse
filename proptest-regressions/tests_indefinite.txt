@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 9b1e55818fa2ea59fc1a3f20d2d415e75b84767a4b19dc3287df338ec342c0fa # shrinks to n = 20, density = 0.2712828924148109, seed = 5363388691293939094
+cc 2fcdf68800ec59f6108087b01ef38b3ddb4cb8f48e338e3c94a0974461d4145d # shrinks to n = 24, density = 0.3181996279212317, seed = 2927192055965926386
