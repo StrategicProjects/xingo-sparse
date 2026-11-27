@@ -97,6 +97,14 @@
 //!     with `q` faer's intranodal pivoting permutation — and unless `K` is
 //!     structurally singular (step M7 of Chapter 5.17).
 //!
+//! *faer's pivot test (task I08).* The intranodal `LBLᵀ` runs faer's dense
+//! Bunch–Kaufman on each supernode, whose test has `λ` and `σ` exchanged
+//! (Algorithm B′ of Chapter 5.16): it can take a singular `2×2` pivot of a
+//! nonsingular `K`. The factor is opaque here, so it is not corrected; the
+//! consequence observed is a refusal — N3′ (a NaN or an infinity) or N4 —
+//! and the tests check the inertia of every factor that is returned. The
+//! `SupernodalLdl` path (Algorithm M) is the one to use for this form.
+//!
 //! ## Algorithm S (Solve)
 //! `x ← S x`, faer's permuted triangular solves `x ← Pᵀ L⁻ᵀ Δ⁻¹ L⁻¹ P x`
 //! on `K̃`, then `x ← S x` (the factor is of `K̃ = S K_reg S`; and the

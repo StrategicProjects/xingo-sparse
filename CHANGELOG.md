@@ -45,6 +45,23 @@ try Augmented, refactor on WrongInertia { found }
                                     ->  KktForm::Indefinite with Regularization::none(), once
 ```
 
+### Fixed
+
+* `FaerDense::sytrf` (feature `faer`) no longer returns a singular or
+  unstable `2×2` pivot. faer 0.24.4's partial-pivoting Bunch–Kaufman
+  states the test `|a_kk| σ ≥ α λ²` as `|a_kk| λ ≥ α σ²` (`λ` and `σ`
+  exchanged), so it could take `E = [1 2; 2 4]` in `[1 2 0; 2 4 8; 0 8 0]`
+  and write NaNs into the factor; `SupernodalLdl<f64, FaerDense>` then
+  refused nonsingular, well-conditioned indefinite matrices on the `LBLᵀ`
+  path (`ZeroPivot` or `NotFinite`; a panic in debug builds) — 55 of
+  9 015 factorizations of random `L₀ Δ₀ L₀ᵀ`. The kernel now checks every
+  `2×2` block faer returns against Bunch–Kaufman's test and, if one fails,
+  refactorizes the block with `NaiveDense` (Algorithm B′ of Chapter 5.16).
+  Where faer's pivots all pass, the factor is unchanged bit for bit; in
+  the factorizations that had such a pivot and still succeeded (1 131 of
+  the 8 960 that succeeded before) the factor changes, with the same
+  inertia. `NaiveDense` and the definite paths are unchanged.
+
 ## [0.5.0] — 2026-11-19
 
 ### Added
