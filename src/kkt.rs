@@ -314,8 +314,10 @@
 //! rounding level, so that `rcond ≈ 1/κ₁(K)` as long as `κ₁(K) u ≪ 1`, and
 //! `rcond` of the order of `u` or below says "singular to working
 //! precision". Which multiple of `u` to call singular is the caller's
-//! choice; the measurement on the Netlib systems is in the documentation
-//! of [`KktSolver::condition_estimate`].
+//! choice: on the 279 unregularized Netlib systems of the calibration
+//! `rcond ≤ 10³ u` separated the singular from the nonsingular ones — a
+//! measured result, not a default; the table is in the documentation of
+//! [`KktSolver::condition_estimate`].
 //!
 //! *Cost.* `ν` in `O(nnz(K))`; between 4 and 11 solves (`O(nnz(F))` each,
 //! about one to five steps of Algorithm F); three vectors of order `N`.
@@ -869,8 +871,20 @@ pub trait KktSolver<T: Real> {
     /// with an error). On the 49, `rcond` lies between `3.0·10⁻¹²`
     /// (`≈ 1.3·10⁴ u`) and `2.4·10⁻²`, and `rcond · κ₁(K)` between 1.0 and
     /// 2.9; on the 17, it is at most `1.7·10⁻¹³` (`≈ 780 u`), and 14 of
-    /// them, all from the end regime, are below `3·10⁻²⁰`. The threshold that calls a factor
-    /// singular is the caller's; no test of this method applies one.
+    /// them, all from the end regime, are below `3·10⁻²⁰`.
+    ///
+    /// | threshold `rcond ≤ c u` | singular flagged (of 17) | nonsingular flagged (of 49) |
+    /// |---|---:|---:|
+    /// | `c = 1, 10, 10²` | 14 | 0 |
+    /// | `c = 10³` (`≈ 2.2·10⁻¹³`) | 17 | 0 |
+    /// | `c = 10⁴` (`≈ 2.2·10⁻¹²`) | 17 | 0 |
+    ///
+    /// On this calibration, `rcond ≤ 10³ u` separated the two groups
+    /// (1.3× above the largest singular `rcond`, 13× below the smallest
+    /// nonsingular one). That is a measured result, not a behaviour or a
+    /// default: this method applies no threshold, and which `rcond` to call
+    /// singular is the caller's decision (the set is small and its `D` are
+    /// synthetic).
     ///
     /// ```
     /// use xingo_sparse::{
