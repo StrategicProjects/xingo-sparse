@@ -635,9 +635,12 @@ fn inertia_matches_dense_eigenvalues() {
             let s = SupernodalLdl::<f64, NaiveDense>::new(NaiveDense, opts);
             outcomes.push(oracle_supernodal(&s, &k).unwrap());
         }
+        #[cfg(feature = "faer")]
+        outcomes.push(
+            oracle_supernodal(&SupernodalLdl::<f64, crate::FaerDense>::default(), &k).unwrap(),
+        );
         // faer's intranodal Bunch–Kaufman cannot delay a pivot: it may fail
-        // ((S6′) still holds), never with another inertia. The `FaerDense`
-        // kernel is left out (`faer_dense_kernel_reproducer`).
+        // ((S6′) still holds), never with another inertia.
         #[cfg(feature = "faer")]
         let weak = [oracle_faer(&k).unwrap()];
         if separated {
@@ -686,24 +689,60 @@ fn faer_dense_refusals_factorize_with_the_naive_kernel() {
 
 /// Reproducer of a defect of the `FaerDense` kernel on the `LBLᵀ` path,
 /// found in I07 and not a matter of the indefinite form (`Augmented` with
-/// the right inertia fails alike): on [`FAER_DENSE_REFUSALS`],
-/// `FaerDense::sytrf` produces a NaN in the diagonal block. A debug build
-/// panics in the NaN assertion of `real::lt` (from `block_inertia`); a
-/// release build reports `ZeroPivot` or `NotFinite` for these
-/// nonsingular, well-conditioned matrices. Ignored until it is fixed; it
-/// then asserts what the `NaiveDense` kernel already does.
+/// the right inertia failed alike): on [`FAER_DENSE_REFUSALS`],
+/// `FaerDense::sytrf` produced a NaN in the diagonal block (a debug build
+/// panicked in the NaN assertion of `real::lt`, from `block_inertia`; a
+/// release build reported `ZeroPivot` or `NotFinite` for these
+/// nonsingular, well-conditioned matrices). The cause was faer's
+/// Bunch–Kaufman test with `λ` and `σ` exchanged (Algorithm B′ of Chapter
+/// 5.16, task I08); it now asserts what the `NaiveDense` kernel does, on
+/// every option set and with `Augmented` of the right inertia too.
 #[cfg(feature = "faer")]
 #[test]
-#[ignore = "FaerDense::sytrf yields NaN on these blocks (I07 finding)"]
 fn faer_dense_kernel_reproducer() {
     for (n, density, seed) in FAER_DENSE_REFUSALS {
         let (k, inertia) = ldl_product(n, density, false, seed);
-        let s = SupernodalLdl::<f64, crate::FaerDense>::default();
-        assert_eq!(
-            oracle_supernodal(&s, &k),
-            Ok(Ok(inertia)),
-            "n {n} seed {seed}"
-        );
+        for opts in variants() {
+            let s = SupernodalLdl::<f64, crate::FaerDense>::new(crate::FaerDense, opts);
+            assert_eq!(
+                oracle_supernodal(&s, &k),
+                Ok(Ok(inertia)),
+                "n {n} seed {seed}"
+            );
+            let aug = KktForm::Augmented {
+                n_primal: inertia.negative,
+                n_dual: inertia.positive,
+            };
+            assert_eq!(factor(&s, &k, aug).map(|(_, i)| i), Ok(inertia));
+        }
+    }
+}
+
+/// The smallest order among the matrices the `FaerDense` kernel refused
+/// in the 3 000 `L₀ Δ₀ L₀ᵀ` of task I08 (`NotFinite` in a release build
+/// before the fix: faer took a singular `2×2` pivot, Algorithm B′ of
+/// Chapter 5.16): every option set gives its inertia, with `Indefinite`
+/// and with `Augmented` of that inertia.
+#[cfg(feature = "faer")]
+#[test]
+fn smallest_faer_dense_refusal_factorizes() {
+    let (k, inertia) = ldl_product(
+        8,
+        0.232_845_212_516_157_03,
+        false,
+        6_738_647_053_308_660_863,
+    );
+    assert_eq!(
+        inertia,
+        Inertia {
+            positive: 5,
+            negative: 3,
+            zero: 0
+        }
+    );
+    for opts in variants() {
+        let s = SupernodalLdl::<f64, crate::FaerDense>::new(crate::FaerDense, opts);
+        assert_eq!(oracle_supernodal(&s, &k), Ok(Ok(inertia)));
     }
 }
 
@@ -726,7 +765,9 @@ proptest! {
         }
         #[cfg(feature = "faer")]
         {
-            // The `FaerDense` kernel is left out (`faer_dense_kernel_reproducer`).
+            let s = SupernodalLdl::<f64, crate::FaerDense>::default();
+            let r = oracle_supernodal(&s, &k).map_err(TestCaseError::fail)?;
+            prop_assert_eq!(r, Ok(inertia));
             // faer's Bunch–Kaufman has no zero-pivot test: (S6′) and (F3)
             // always, the inertia when it succeeds.
             if let Ok(i) = oracle_faer(&k).map_err(TestCaseError::fail)? {
