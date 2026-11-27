@@ -5,8 +5,8 @@ use proptest::prelude::*;
 
 use crate::real::{approx_eq, is_exact_zero, le, lt};
 use crate::{
-    Col, ColumnRef, CscMatrix, Lu, LuError, LuFactor, LuOptions, PreOrder, RefactorReason, Row,
-    Sign, SparseVec, TolScale, UpdateOutcome,
+    Col, ColumnRef, CscMatrix, KktSolver, Lu, LuError, LuFactor, LuOptions, PreOrder,
+    RefactorReason, Row, Sign, SparseVec, TolScale, UpdateOutcome,
 };
 
 /// The factor of these tests: `f64`, Forrest–Tomlin.
@@ -2104,6 +2104,299 @@ fn triangular_factors_invariants_catch_mutations() {
     let mut bad = t;
     bad.u.n_rows += 1;
     assert!(bad.check_invariants().is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1 — the condition estimate of a factor: `KktSolver::condition_estimate`
+// (Chapter 5.14, Algorithm H, (H1′) and (H2′)).
+// ---------------------------------------------------------------------------
+
+/// The dense symmetric matrix of the lower triangle `k`.
+fn dense_sym(k: &CscMatrix) -> Dense {
+    let n = k.n_rows;
+    let mut d = vec![vec![0.0; n]; n];
+    for j in 0..n {
+        let (rows, vals) = k.col(Col::from_usize(j));
+        for (&i, &v) in rows.iter().zip(vals) {
+            let i = i as usize;
+            if i >= j {
+                d[i][j] = v;
+                d[j][i] = v;
+            }
+        }
+    }
+    d
+}
+
+fn norm1_dense(m: &Dense) -> f64 {
+    (0..m.len())
+        .map(|j| m.iter().map(|r| r[j].abs()).sum::<f64>())
+        .fold(0.0, f64::max)
+}
+
+/// The counts of a run of [`condition_case`]: cases, estimates within a
+/// factor 3 and 10 of `‖K⁻¹‖₁`.
+#[derive(Default)]
+struct WithinCounts {
+    cases: usize,
+    within3: usize,
+    within10: usize,
+}
+
+/// One unregularized `LBLᵀ` of `k` (inertia from the dense inverse's
+/// absence of failure is not needed: the declared form is the found one)
+/// and its estimate against `‖K⁻¹‖₁` by the dense inverse. `None` if `k`
+/// does not factorize or is numerically singular for the dense oracle.
+fn condition_case<S: KktSolver<f64>>(
+    s: &S,
+    k: &CscMatrix,
+    n_primal: usize,
+) -> Option<(f64, f64, f64)> {
+    let n = k.n_rows;
+    let form = crate::KktForm::Augmented {
+        n_primal,
+        n_dual: n - n_primal,
+    };
+    let sym = s.analyze(&k.pattern(), form, &crate::Amd::default()).ok()?;
+    let (num, _) = s.factorize(&sym, k, crate::Regularization::none()).ok()?;
+    let d = dense_sym(k);
+    let exact = norm1_dense(&dense_inverse(&d)?);
+    let c = s.condition_estimate(&num, k);
+    assert!(
+        approx_eq(c.norm, norm1_dense(&d), 1e-15),
+        "{} vs {}",
+        c.norm,
+        norm1_dense(&d)
+    );
+    Some((c.inverse_norm, exact, c.rcond()))
+}
+
+/// (H1′) on the random KKT systems of the backends' tests (start and
+/// middle regimes of `D`, `A` of full row rank where it factorizes), with
+/// the unregularized `LBLᵀ` of `SupernodalLdl`: the estimate never exceeds
+/// `‖K⁻¹‖₁` beyond the first-order difference `κ₁(K) u` between `K⁻¹` and
+/// the inverse the solves apply (`F̂ = K + E`, with a margin of 10³), and is
+/// within a factor 10 in at least 99 % of the cases.
+#[test]
+fn condition_estimate_bounds_the_inverse_from_below() {
+    use crate::tests::kkt_gen::kkt;
+    let s = crate::SupernodalLdl::<f64>::default();
+    let mut w = WithinCounts::default();
+    for seed in 0..600_u64 {
+        let m = 1 + usize::try_from(seed % 12).unwrap();
+        let n = m + usize::try_from(seed % 7).unwrap();
+        let spread = [0.0, 2.0, 4.0][usize::try_from(seed % 3).unwrap()];
+        let (aug, _, _) = kkt(m, n, spread, seed.wrapping_mul(0x9E37_79B9) + 1);
+        let Some((est, exact, rcond)) = condition_case(&s, &aug, n) else {
+            continue;
+        };
+        let kappa = exact * norm1_dense(&dense_sym(&aug));
+        let slack = 1.0 + 1e3 * kappa * f64::EPSILON;
+        assert!(
+            est <= exact * slack,
+            "seed {seed}: estimate {est} > ‖K⁻¹‖₁ {exact} (κ {kappa:e})"
+        );
+        assert!(rcond > 0.0 && rcond <= 1.0);
+        w.cases += 1;
+        w.within3 += usize::from(est * 3.0 >= exact);
+        w.within10 += usize::from(est * 10.0 >= exact);
+    }
+    assert!(w.cases >= 300, "only {} factorized", w.cases);
+    assert!(
+        w.within10 * 100 >= w.cases * 99,
+        "{} of {} within 10",
+        w.within10,
+        w.cases
+    );
+    assert!(w.within3 <= w.within10);
+}
+
+/// `rcond` follows a planted small eigenvalue: `K = G Λ Gᵀ` (order 12,
+/// `G` a product of 40 Givens rotations, `Λ = ±(1 + u_i)` but one
+/// eigenvalue `10⁻ᵏ`), factorized by the unregularized `LBLᵀ` with its
+/// inertia declared. The estimate of `‖K⁻¹‖₁` is within a factor 10 of the
+/// dense one, so `rcond` is within a factor 10 above the true `1/κ₁(K)`,
+/// itself at most `10⁻ᵏ` (`‖K‖₁ ≥ ‖K‖₂ ≥ 1`, `‖K⁻¹‖₁ ≥ 10ᵏ`).
+#[test]
+fn condition_estimate_tracks_a_planted_eigenvalue() {
+    let n = 12;
+    let mut rng = Rng::new(1);
+    let s = crate::SupernodalLdl::<f64>::default();
+    for k in [1, 2, 4, 6, 8, 10, 12] {
+        let mut g: Dense = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        for _ in 0..40 {
+            let (p, q) = (rng.below(n), rng.below(n));
+            if p == q {
+                continue;
+            }
+            let t = count(rng.below(1000) + 1) / 1000.0 * std::f64::consts::PI;
+            let (c, sn) = (t.cos(), t.sin());
+            for row in &mut g {
+                let (a, b) = (row[p], row[q]);
+                row[p] = c * a - sn * b;
+                row[q] = sn * a + c * b;
+            }
+        }
+        let lambda: Vec<f64> = (0..n)
+            .map(|i| {
+                if i == 0 {
+                    10f64.powi(-k)
+                } else {
+                    let v = 1.0 + count(rng.below(100)) / 100.0;
+                    if i % 2 == 0 { v } else { -v }
+                }
+            })
+            .collect();
+        let negative = lambda.iter().filter(|&&v| v < 0.0).count();
+        let mut t = Vec::new();
+        for i in 0..n {
+            for j in 0..=i {
+                let v: f64 = (0..n).map(|l| g[i][l] * lambda[l] * g[j][l]).sum();
+                if v != 0.0 {
+                    t.push((Row::from_usize(i), Col::from_usize(j), v));
+                }
+            }
+        }
+        let kk = CscMatrix::from_triplets(n, n, &t).unwrap();
+        let (est, exact, rcond) = condition_case(&s, &kk, negative).expect("factorizes");
+        let truth = 1.0 / (exact * norm1_dense(&dense_sym(&kk)));
+        assert!(
+            est * 10.0 >= exact && est <= exact * (1.0 + 1e-3),
+            "k = {k}: {est} vs {exact}"
+        );
+        assert!(
+            rcond >= truth * (1.0 - 1e-3) && rcond <= truth * 10.0,
+            "k = {k}: rcond {rcond:e}, 1/κ₁ {truth:e}"
+        );
+        assert!(rcond <= 10f64.powi(1 - k), "k = {k}: rcond {rcond:e}");
+    }
+}
+
+/// Issue #1: `K` singular only numerically. `K = [−D, Aᵀ; A, 0]` with
+/// `A = B C + η E` (`8 × 12`; `B` of `8 × 7`, `C` of `7 × 12`, `E` dense,
+/// all entries non-dyadic, so `A` is structurally of full rank and its
+/// smallest singular value is of the order of `η`; `κ(K) ~ η⁻²`).
+/// With `η = 10⁻⁷` (`κ ~ 10¹⁴`, past the dense oracle's pivot test) most
+/// seeds factorize without an error under the unregularized `LBLᵀ` — the
+/// case of the issue — and every one that does shows `rcond ≤ 100 u`;
+/// with `η = 10⁻⁴` (`κ ~ 10⁹–10¹⁰`) all factorize and `rcond` is within
+/// a factor 10 above the dense `1/κ₁(K)`.
+#[test]
+#[allow(clippy::needless_range_loop)] // matrix notation
+fn condition_estimate_flags_numerically_singular_systems() {
+    let s = crate::SupernodalLdl::<f64>::default();
+    let (m, n) = (8, 12);
+    let form = crate::KktForm::Augmented {
+        n_primal: n,
+        n_dual: m,
+    };
+    let system = |seed: u64, eta: f64| {
+        let mut rng = Rng::new(2 * seed + 1);
+        let mut unit = || count(rng.below(1_000_000) + 1) / 999_983.0 - 0.5;
+        let b: Dense = (0..m)
+            .map(|_| (0..m - 1).map(|_| unit()).collect())
+            .collect();
+        let c: Dense = (0..m - 1)
+            .map(|_| (0..n).map(|_| unit()).collect())
+            .collect();
+        let mut t = Vec::new();
+        for j in 0..n {
+            t.push((
+                Row::from_usize(j),
+                Col::from_usize(j),
+                -10f64.powf(2.0 * unit()),
+            ));
+        }
+        for (i, bi) in b.iter().enumerate() {
+            for j in 0..n {
+                let v = (0..m - 1).map(|l| bi[l] * c[l][j]).sum::<f64>() + eta * unit();
+                t.push((Row::from_usize(n + i), Col::from_usize(j), v));
+            }
+        }
+        CscMatrix::from_triplets(n + m, n + m, &t).unwrap()
+    };
+    let rc = |k: &CscMatrix| {
+        let sym = s
+            .analyze(&k.pattern(), form, &crate::Amd::default())
+            .unwrap();
+        s.factorize(&sym, k, crate::Regularization::none())
+            .ok()
+            .map(|(num, _)| s.condition_estimate(&num, k).rcond())
+    };
+    let mut silent = 0;
+    for seed in 1..=20_u64 {
+        if let Some(r) = rc(&system(seed, 1e-7)) {
+            assert!(
+                r <= 100.0 * f64::EPSILON,
+                "seed {seed}, η = 1e-7: rcond {r:e}"
+            );
+            silent += 1;
+        }
+        let k = system(seed, 1e-4);
+        let r = rc(&k).expect("η = 1e-4 factorizes");
+        let d = dense_sym(&k);
+        let truth = 1.0 / (norm1_dense(&dense_inverse(&d).unwrap()) * norm1_dense(&d));
+        assert!(
+            r >= truth * (1.0 - 1e-2) && r <= truth * 10.0,
+            "seed {seed}, η = 1e-4: rcond {r:e}, 1/κ₁ {truth:e}"
+        );
+    }
+    assert!(
+        silent >= 5,
+        "only {silent} numerically singular systems factorized"
+    );
+}
+
+/// (H2′): the estimate only solves — the factor solves exactly as before —
+/// and the regularized factor is estimated against `F = K_reg` (here
+/// `K + S⁻¹ Σ S⁻¹`, the default shifts in the equilibrated matrix, no
+/// bump on these systems): never above its `‖F⁻¹‖₁`. With `faer`, the
+/// `FaerLdl` backend inherits the same method and agrees on the
+/// unregularized estimate to rounding.
+#[test]
+fn condition_estimate_reads_the_factor_only() {
+    use crate::tests::kkt_gen::{kkt, rhs};
+    use crate::{Amd, Regularization, SupernodalLdl};
+    let s = SupernodalLdl::<f64>::default();
+    for seed in 1..40_u64 {
+        let (m, n) = (6, 9);
+        let (aug, _, form) = kkt(m, n, 2.0, seed);
+        let sym = s.analyze(&aug.pattern(), form, &Amd::default()).unwrap();
+        let reg = Regularization::default();
+        let (num, _) = s.factorize(&sym, &aug, reg).unwrap();
+        let b = rhs(n + m, seed);
+        let mut x0 = b.clone();
+        s.solve(&num, &mut x0);
+        let c = s.condition_estimate(&num, &aug);
+        let mut x1 = b.clone();
+        s.solve(&num, &mut x1);
+        assert!(x0.iter().zip(&x1).all(|(a, b)| a.to_bits() == b.to_bits()));
+        // F = K + S⁻¹ Σ S⁻¹ (Algorithm K, ShiftScale::Equilibrated).
+        let mut f = dense_sym(&aug);
+        for (j, &sj) in num.scale().iter().enumerate() {
+            f[j][j] += if j < n { -reg.primal } else { reg.dual } / (sj * sj);
+        }
+        let exact = norm1_dense(&dense_inverse(&f).unwrap());
+        assert!(
+            c.inverse_norm <= exact * (1.0 + 1e-6),
+            "seed {seed}: {} > {exact}",
+            c.inverse_norm
+        );
+        #[cfg(feature = "faer")]
+        {
+            let fl = crate::FaerLdl::default();
+            if let (Some((a, _, _)), Some((b, _, _))) =
+                (condition_case(&s, &aug, n), condition_case(&fl, &aug, n))
+            {
+                assert!(
+                    approx_eq(a, b, 1e-6),
+                    "seed {seed}: supernodal {a} vs faer {b}"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

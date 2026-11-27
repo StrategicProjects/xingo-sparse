@@ -171,3 +171,29 @@ fn kkt_solves_allocate_nothing_from_the_first_call() {
         allocates_nothing(&solver, &k, form, "faer-ldl");
     }
 }
+
+/// Chapter 5.14, Algorithm H (issue #1): a condition estimate allocates
+/// its three vectors of order `N` and nothing else (the solves allocate
+/// nothing, (L5)), with every backend.
+#[test]
+fn condition_estimate_allocates_three_vectors() {
+    fn three<S: KktSolver<f64>>(solver: &S, k: &CscMatrix, form: KktForm, label: &str) {
+        let (num, _) = factor(solver, k, form);
+        let mut c = None;
+        let count = allocations(|| c = Some(solver.condition_estimate(&num, k)));
+        assert_eq!(count, 3, "{label}: {count} allocations");
+        let c = c.unwrap();
+        assert!(c.solves >= 4 && c.rcond() > 0.0, "{label}: {c:?}");
+    }
+    let (m, n) = (40, 120);
+    let k = augmented(m, n, 4.0);
+    let form = KktForm::Augmented {
+        n_primal: n,
+        n_dual: m,
+    };
+    three(&SupernodalLdl::<f64>::default(), &k, form, "supernodal-ldl");
+    #[cfg(feature = "faer")]
+    for supernodal in [Some(false), Some(true)] {
+        three(&xingo_sparse::FaerLdl { supernodal }, &k, form, "faer-ldl");
+    }
+}

@@ -185,7 +185,9 @@
 //! * §5.13 [`scaling`] — [`Equilibration`] and [`Scaling`] (Algorithms G,
 //!   R and I);
 //! * §5.14 [`kkt`] — [`KktSolver`] and its shared policy: regularization
-//!   (Algorithm K) and iterative refinement (Algorithm F);
+//!   (Algorithm K) and iterative refinement (Algorithm F); the condition
+//!   estimate on request, [`KktSolver::condition_estimate`] →
+//!   [`ConditionEstimate`] (Algorithm H, issue #1);
 //! * §5.15 `faer_ldl` (feature `faer`) — [`FaerLdl`] (Algorithms A, N, S);
 //! * §5.16 [`dense`] — [`DenseKernel`], [`NaiveDense`], `FaerDense`
 //!   (Algorithms P, B, T, G, S);
@@ -288,8 +290,8 @@ pub use factor::{
 pub use faer_ldl::{FaerLdl, FaerNumeric, FaerSymbolic};
 pub use index::{Col, Row};
 pub use kkt::{
-    EQUILIBRATION_PASSES, Inertia, KktForm, KktSolver, RefineReport, RefineWorkspace, Refinement,
-    Regularization, ShiftScale,
+    CONDITION_ESTIMATE_STEPS, ConditionEstimate, EQUILIBRATION_PASSES, Inertia, KktForm, KktSolver,
+    RefineReport, RefineWorkspace, Refinement, Regularization, ShiftScale,
 };
 pub use ordering::{Amd, Colamd, Natural, Ordering, OrderingTarget};
 pub use partition::BlockPartition;
