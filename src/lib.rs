@@ -158,7 +158,9 @@
 //! * §5.2 (private) — dynamic row/column files and count lists;
 //! * §5.3 [`factor`] — [`Lu`] and [`LuFactor::factorize`], Algorithm L:
 //!   singleton (triangular) phase, then Markowitz pivoting with a relative
-//!   threshold on the bump (Suhl & Suhl 1990);
+//!   threshold on the bump (Suhl & Suhl 1990); the copy of a fresh factor
+//!   in step numbering, [`Lu::triangular_factors`] → [`TriangularFactors`]
+//!   (Algorithm X, issue #6);
 //! * §5.4 [`solve`] — [`LuFactor::ftran`] and [`LuFactor::btran`]: the
 //!   dense Algorithms F and B and the hypersparse Algorithms HF and HB
 //!   (Gilbert–Peierls reach), chosen per call by the density policy of
@@ -279,7 +281,9 @@ pub use csr::CsrMatrix;
 pub use dense::FaerDense;
 pub use dense::{DenseBlock, DenseKernel, NaiveDense};
 pub use error::{DenseError, KktError, LuError, SparseError};
-pub use factor::{Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder, TolScale};
+pub use factor::{
+    Factors, Lu, LuFactor, LuOptions, LuStats, PreOrder, TolScale, TriangularFactors,
+};
 #[cfg(feature = "faer")]
 pub use faer_ldl::{FaerLdl, FaerNumeric, FaerSymbolic};
 pub use index::{Col, Row};

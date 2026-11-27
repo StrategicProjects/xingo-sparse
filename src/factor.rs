@@ -279,6 +279,78 @@
 //! scaled, never meet the singularity test where the scales differ, and
 //! the relative drop tolerance is what changes those three paths.
 //!
+//! ## Reading the factors (issue #6)
+//! The stored factors are opaque ([`Factors`]): their layout — `L` as
+//! etas in the original row indices, `U` in two dynamic files with room
+//! and vacant slots for the updates — is the business of the solves and
+//! of the update. A consumer that needs the triangular factors
+//! themselves (a rigorous bound of `‖B⁻¹‖` through comparison matrices in
+//! `xingo-extprec`, a determinant, an export as SciPy's `splu` gives it)
+//! gets a *copy* in the numbering of the steps,
+//! [`Lu::triangular_factors`] `→` [`TriangularFactors`]:
+//! ```text
+//!   row_perm.fwd[s] = p_s,   col_perm.fwd[s] = q_s,
+//!   l[s', s] = l_{p_{s'} s}   (s' > s; the unit diagonal is implicit),
+//!   u[s, s'] = u_{p_s q_{s'}} (s ≤ s'; the diagonal is stored),
+//! ```
+//! both `m × m` [`CscMatrix`] with sorted rows, so that `P B Q ≈ L U`
+//! with `(P B Q)[s, t] = b_{p_s q_t}`; with `B` given as a
+//! [`crate::ColumnSource`], column `j` of `B` is position `j`, the
+//! convention of FTRAN (D-0016).
+//!
+//! Algorithm X (export of a fresh factorization).
+//! X1. [Fresh?] If the factor is not valid, or an update was applied
+//!     since the last factorization (the policy's
+//!     [`UpdateStats::updates`] is nonzero, or the step sequence has
+//!     vacant slots), return `None`.
+//! X2. [L.] For `s' = 0, 1, …, m − 1`, with `i = p_{s'}`: for each
+//!     multiplier `l_{i p}` of row `i` of `L` (the transposed copy built
+//!     by step L7 for the hypersparse BTRAN), count it in column
+//!     `step(p)` of `l`. Prefix sums give the column pointers; a second
+//!     identical pass writes `(s', l_{i p})`. The rows of each column come
+//!     out increasing because `s'` is.
+//! X3. [U.] The same over the rows of `U` in step order: row `s` writes
+//!     its diagonal `u_{p_s q_s}` in column `s` and every off-diagonal
+//!     `u_{p_s j}` in column `step(j)`.
+//! X4. [Permutations.] `row_perm` from `(p_s)`, `col_perm` from `(q_s)`.
+//!
+//! An entry that is exactly zero (an underflowed multiplier, an exact
+//! zero handed over by a custom [`crate::ColumnSource`]) is not copied:
+//! a [`CscMatrix`] stores nonzeros only (C4), and the product does not
+//! change.
+//!
+//! *Why only a fresh factorization.* After `t` updates the factor is
+//! `B = Pᵀ L R₁⁻¹ ⋯ R_t⁻¹ U Qᵀ` (Chapter 5.4, Notation): `U` is
+//! permuted and the row etas `R_e` belong to the update policy, not to
+//! [`Factors`]. An export of that product needs the etas as a further
+//! field; until a consumer needs it, the caller refactorizes and exports
+//! the fresh factor. [`TriangularFactors`] is `#[non_exhaustive]`, so the
+//! etas can be added as a field without breaking anyone.
+//!
+//! Invariants of the export ([`TriangularFactors::check_invariants`]):
+//! (T1) `row_perm` and `col_perm` are permutations of `0..m`; `l` and `u`
+//!      are `m × m` and satisfy (C1)–(C4) (no explicit zeros); `l` is
+//!      strictly lower triangular; `u` is upper triangular with every
+//!      diagonal entry present (and nonzero, by (C4) and (F3)).
+//! (T2) The values are the stored ones, copied without arithmetic, so the
+//!      dense FTRAN of the fresh factor (Algorithm F of Chapter 5.4, steps
+//!      F1 and F3, no row etas) is the forward substitution with `l` and
+//!      the backward substitution with `u`, column by column, bit for bit
+//!      — each entry of the work vector receives its updates in the same
+//!      order. (The hypersparse FTRAN visits the columns in a topological
+//!      order of the reach and may round differently.) What `L U` is *not*
+//!      is `P B Q`: the difference holds the rounding of the elimination,
+//!      bounded entrywise by `γ_m (|L| |U|)` (Higham 2002, Thm. 9.3, which
+//!      holds for any pivot order), and the entries dropped as negligible
+//!      by step L6 (`|s_ij| ≤ ε_j`, at most one per entry and step). A
+//!      consumer that needs rigour encloses `P B Q − L U`, it does not
+//!      assume it is zero.
+//! (T3) Exporting reads the factor and changes nothing: the solves after
+//!      it return the same bits as without it.
+//!
+//! Cost: `O(m + nnz(L) + nnz(U))` time, and the copy as memory (about 12
+//! bytes per entry in `f64`).
+//!
 //! ## Complexity
 //! The triangular phase costs `O(nnz(B))` plus one division per `L` entry.
 //! A Markowitz pivot costs `O(Σ_j c_j)` over the columns of its `U` row,
@@ -304,7 +376,9 @@ use crate::solve::{Kind, NO_ETA, SolveStats, Workspace};
 use crate::store::{CountLists, LineStore, NIL, check_links, remove_linked};
 use crate::symbolic::SymbolicLu;
 use crate::update::{BasisUpdate, ForrestTomlin, UpdateOutcome, UpdateStats};
-use crate::{Colamd, Ordering, OrderingTarget, Pattern, Row, SparseError, SparseVec};
+use crate::{
+    Col, Colamd, CscMatrix, Ordering, OrderingTarget, Pattern, Perm, Row, SparseError, SparseVec,
+};
 
 /// Options of the factorization, of the solves and of the update policy.
 ///
@@ -818,6 +892,91 @@ impl<T: Real, U: BasisUpdate<T>> Lu<T, U> {
         &self.update
     }
 
+    /// The triangular factors `P B Q = L U` of the last factorization,
+    /// copied out in the numbering of the steps (Chapter 5.3, "Reading the
+    /// factors", Algorithm X): `None` if the factor is not valid (before
+    /// the first factorization, after a singular one) or if a
+    /// Forrest–Tomlin update was applied since (refactorize first). The
+    /// factor is not changed (T3). `O(m + nnz(L) + nnz(U))` time and
+    /// memory.
+    ///
+    /// ```
+    /// use xingo_sparse::{Col, CscMatrix, Lu, LuFactor, Row, SparseVec};
+    /// // B = [2 1; 4 5]: no singleton, a 2×2 bump.
+    /// let b = CscMatrix::from_triplets(2, 2, &[
+    ///     (Row(0), Col(0), 2.0), (Row(1), Col(0), 4.0),
+    ///     (Row(0), Col(1), 1.0), (Row(1), Col(1), 5.0),
+    /// ])
+    /// .unwrap();
+    /// let mut lu = Lu::<f64>::default();
+    /// lu.factorize(&b).unwrap();
+    /// let f = lu.triangular_factors().unwrap();
+    /// f.check_invariants().unwrap();
+    /// // Solve B x = r with the exported factors: y = L⁻¹ P r, z = U⁻¹ y,
+    /// // x[q_s] = z[s].
+    /// let r = [3.0, 9.0];
+    /// let mut y: Vec<f64> = f.row_perm.fwd.iter().map(|&p| r[p as usize]).collect();
+    /// for s in 0..2 {
+    ///     for p in f.l.col_ptr[s]..f.l.col_ptr[s + 1] {
+    ///         y[f.l.row_idx[p] as usize] -= f.l.val[p] * y[s];
+    ///     }
+    /// }
+    /// let mut x = [0.0; 2];
+    /// for s in (0..2).rev() {
+    ///     let (rows, vals) = f.u.col(Col(s as u32));
+    ///     let z = y[s] / vals[vals.len() - 1]; // the diagonal is last
+    ///     for (&i, &v) in rows.iter().zip(vals).take(rows.len() - 1) {
+    ///         y[i as usize] -= v * z;
+    ///     }
+    ///     x[f.col_perm.fwd[s] as usize] = z;
+    /// }
+    /// let mut v = SparseVec::from_dense(&r);
+    /// lu.ftran(&mut v);
+    /// assert_eq!(v.values(), &x); // (T2): the same bits as the dense FTRAN
+    /// ```
+    pub fn triangular_factors(&self) -> Option<TriangularFactors<T>> {
+        let f = &self.factors;
+        let m = f.m;
+        // X1.
+        if !f.valid || self.update.stats().updates != 0 || f.step_row.len() != m {
+            return None;
+        }
+        debug_assert!(
+            f.row_step == f.l_row_step,
+            "fresh factor: L and U share the order"
+        );
+        // X2: L by rows (`lt_*`, original rows), visited in step order.
+        let l_rows = (0..m).map(|s| {
+            let i = f.step_row[s] as usize;
+            let r = f.lt_start[i]..f.lt_start[i + 1];
+            f.lt_pivot[r.clone()]
+                .iter()
+                .zip(&f.lt_value[r])
+                .map(|(&p, &l)| (f.row_step[p as usize], l))
+        });
+        let l = csc_by_rows(m, l_rows);
+        // X3: U by rows, the diagonal first in each row.
+        let u_rows = (0..m).map(|s| {
+            let i = f.step_row[s] as usize;
+            let (idx, val) = f.u_rows.line(i);
+            core::iter::once((s, f.diag[i])).chain(
+                idx.iter()
+                    .zip(val)
+                    .map(|(&j, &v)| (f.col_step[j as usize], v)),
+            )
+        });
+        let u = csc_by_rows(m, u_rows);
+        // X4.
+        let out = TriangularFactors {
+            row_perm: Perm::from_fwd(f.step_row.clone()).expect("(F1): the pivot rows"),
+            col_perm: Perm::from_fwd(f.step_col.clone()).expect("(F1): the pivot positions"),
+            l,
+            u,
+        };
+        debug_assert_eq!(out.check_invariants(), Ok(()));
+        Some(out)
+    }
+
     /// Step L7: moves the factors out of the elimination (Algorithm L or
     /// Algorithm R of Chapter 5.12), or reports singularity; records the
     /// pivot sequence.
@@ -1008,6 +1167,127 @@ impl<T: Real, U: BasisUpdate<T>> LuFactor<T> for Lu<T, U> {
     fn check_invariants(&self) -> Result<(), SparseError> {
         self.factors.check_invariants()
     }
+}
+
+/// The triangular factors of a fresh factorization `P B Q = L U`
+/// (Chapter 5.3, "Reading the factors"), copied out in the numbering of
+/// the steps `s = 0..m` by [`Lu::triangular_factors`].
+///
+/// `(P B Q)[s, t] = b_{p_s q_t}` with `p_s = row_perm.fwd[s]` and `q_t =
+/// col_perm.fwd[t]`; `L U` equals it up to the rounding of the elimination
+/// and the entries it dropped as negligible (invariant (T2)). Invariants
+/// (T1) are checked by [`TriangularFactors::check_invariants`].
+/// `#[non_exhaustive]`: the row etas of the Forrest–Tomlin update may
+/// become a further field.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct TriangularFactors<T: Real = f64> {
+    /// `fwd[s] = p_s`: the row of `B` pivoted at step `s` (row `s` of
+    /// `P B` is row `p_s` of `B`).
+    pub row_perm: Perm,
+    /// `fwd[s] = q_s`: the position (column of `B`) pivoted at step `s`
+    /// (column `s` of `B Q` is column `q_s` of `B`).
+    pub col_perm: Perm,
+    /// The strictly lower part of `L` (`m × m`, rows sorted):
+    /// `l[s', s] = l_{p_{s'} s}`, `s' > s`. The unit diagonal is implicit
+    /// and not stored.
+    pub l: CscMatrix<T>,
+    /// `U` (`m × m`, rows sorted), diagonal included and nonzero:
+    /// `u[s, s'] = u_{p_s q_{s'}}`, `s ≤ s'`; the diagonal is the last
+    /// entry of each column.
+    pub u: CscMatrix<T>,
+}
+
+impl<T: Real> TriangularFactors<T> {
+    /// The order `m`.
+    #[inline]
+    pub fn order(&self) -> usize {
+        self.row_perm.len()
+    }
+
+    /// Checks invariants (T1): two permutations of `0..m`, `l` and `u` of
+    /// order `m` and valid [`CscMatrix`] values (sorted rows, no explicit
+    /// zeros), `l` strictly lower triangular, `u` upper triangular with
+    /// every diagonal entry present.
+    pub fn check_invariants(&self) -> Result<(), SparseError> {
+        let m = self.order();
+        self.row_perm.check_invariants()?;
+        self.col_perm.check_invariants()?;
+        for (what, found) in [
+            ("column permutation length", self.col_perm.len()),
+            ("rows of L", self.l.n_rows),
+            ("columns of L", self.l.n_cols()),
+            ("rows of U", self.u.n_rows),
+            ("columns of U", self.u.n_cols()),
+        ] {
+            if found != m {
+                return Err(SparseError::Dimension {
+                    what,
+                    expected: m,
+                    found,
+                });
+            }
+        }
+        self.l.check_invariants()?;
+        self.u.check_invariants()?;
+        for s in 0..m {
+            let (rows, _) = self.l.col(Col::from_usize(s));
+            if rows.first().is_some_and(|&i| (i as usize) <= s) {
+                return Err(SparseError::Malformed(format!(
+                    "(T1): L has an entry on or above the diagonal in column {s}"
+                )));
+            }
+            let (rows, _) = self.u.col(Col::from_usize(s));
+            if rows.last().map(|&i| i as usize) != Some(s) {
+                return Err(SparseError::Malformed(format!(
+                    "(T1): U column {s} has an entry below the diagonal or no diagonal"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Steps X2–X3: an `m × m` CSC from rows `s = 0, 1, …` given as `(column,
+/// value)` pairs, by a counting sort (two passes); the rows of each column
+/// come out increasing. Exact zeros are skipped (C4).
+fn csc_by_rows<T: Real, R, I>(m: usize, rows: R) -> CscMatrix<T>
+where
+    R: Iterator<Item = I> + Clone,
+    I: Iterator<Item = (usize, T)>,
+{
+    let mut col_ptr = vec![0_usize; m + 1];
+    for row in rows.clone() {
+        for (c, v) in row {
+            if !is_exact_zero(v) {
+                col_ptr[c + 1] += 1;
+            }
+        }
+    }
+    for c in 0..m {
+        col_ptr[c + 1] += col_ptr[c];
+    }
+    let nnz = col_ptr[m];
+    let mut row_idx = vec![0_u32; nnz];
+    let mut val = vec![T::ZERO; nnz];
+    let mut next = col_ptr.clone();
+    for (s, row) in rows.enumerate() {
+        for (c, v) in row {
+            if !is_exact_zero(v) {
+                row_idx[next[c]] = idx32(s);
+                val[next[c]] = v;
+                next[c] += 1;
+            }
+        }
+    }
+    let a = CscMatrix {
+        n_rows: m,
+        col_ptr,
+        row_idx,
+        val,
+    };
+    debug_assert_eq!(a.check_invariants(), Ok(()));
+    a
 }
 
 impl<T: Real> Factors<T> {

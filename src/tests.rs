@@ -1761,6 +1761,352 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #6 — reading the factors: `Lu::triangular_factors` (Chapter 5.3,
+// "Reading the factors", Algorithm X, invariants (T1)–(T3)).
+// ---------------------------------------------------------------------------
+
+/// The exported factors as dense `L` (unit diagonal added) and `U`.
+fn dense_triangular(t: &crate::TriangularFactors) -> (Dense, Dense) {
+    let mut l = dense_of(&t.l);
+    for (s, row) in l.iter_mut().enumerate() {
+        row[s] = 1.0;
+    }
+    (l, dense_of(&t.u))
+}
+
+/// The entrywise oracle of (T2):
+/// `|fl(L U) − P B Q|_st ≤ 3 γ_m (|L| |U|)_st + m ε_{q_t}`. Higham (2002, Thm. 9.3) bounds the backward error of the
+/// elimination by `γ_m |L| |U|` for any pivot order (the Markowitz order is
+/// one); the product formed here in `f64` adds at most `γ_m |L| |U|`, and
+/// the third `γ_m` absorbs the rounding of `|L| |U|` itself. Step L6 drops
+/// partial values `|s_ij| ≤ ε_j` (`ε_j = ε_drop`, or `ε_drop β_j` with
+/// `TolScale::Column`), at most one per entry and step. Returns the largest
+/// ratio of the deviation to the bound (`≤ 1` passes) and checks that the
+/// export agrees with the internal factors entry by entry.
+fn export_ratio(f: &LuF64, b: &Dense) -> f64 {
+    let t = f.triangular_factors().expect("a fresh, valid factor");
+    assert_eq!(t.check_invariants(), Ok(()));
+    let m = t.order();
+    let (l, u) = dense_triangular(&t);
+    // The export is the stored factor, value for value.
+    let (l0, u0, pbq0) = dense_lu(f, b);
+    for s in 0..m {
+        for c in 0..m {
+            assert_eq!(l[s][c].to_bits(), l0[s][c].to_bits(), "L[{s}][{c}]");
+            assert_eq!(u[s][c].to_bits(), u0[s][c].to_bits(), "U[{s}][{c}]");
+        }
+    }
+    let pbq: Dense = (0..m)
+        .map(|s| {
+            (0..m)
+                .map(|c| b[t.row_perm.fwd[s] as usize][t.col_perm.fwd[c] as usize])
+                .collect()
+        })
+        .collect();
+    assert_eq!(pbq, pbq0);
+    let opts = f.options();
+    let eps_col = |c: usize| {
+        let j = t.col_perm.fwd[c] as usize;
+        match opts.tol_scale {
+            TolScale::Absolute => opts.drop_tol,
+            TolScale::Column => opts.drop_tol * (0..m).fold(0.0_f64, |g, i| g.max(b[i][j].abs())),
+        }
+    };
+    let unit = f64::EPSILON / 2.0;
+    let gamma = count(m) * unit / (1.0 - count(m) * unit);
+    let lu = mat_mul(&l, &u);
+    let abs = |d: &Dense| -> Dense {
+        d.iter()
+            .map(|r| r.iter().map(|v| v.abs()).collect())
+            .collect()
+    };
+    let mag = mat_mul(&abs(&l), &abs(&u));
+    let mut worst = 0.0_f64;
+    for s in 0..m {
+        for c in 0..m {
+            let dev = (lu[s][c] - pbq[s][c]).abs();
+            let bound = 3.0 * gamma * mag[s][c] + count(m) * eps_col(c);
+            if dev > 0.0 {
+                worst = worst.max(if bound > 0.0 {
+                    dev / bound
+                } else {
+                    f64::INFINITY
+                });
+            }
+        }
+    }
+    worst
+}
+
+/// FTRAN with the exported factors, mirroring Algorithm F of Chapter 5.4
+/// (steps F1 and F3, exact zeros skipped as there): column-oriented forward
+/// substitution with `l`, backward with `u`.
+fn ftran_by_export(t: &crate::TriangularFactors, rhs: &[f64]) -> Vec<f64> {
+    let m = t.order();
+    let mut y: Vec<f64> = t.row_perm.fwd.iter().map(|&p| rhs[p as usize]).collect();
+    for s in 0..m {
+        let ys = y[s];
+        if is_exact_zero(ys) {
+            continue;
+        }
+        let (rows, vals) = t.l.col(Col::from_usize(s));
+        for (&i, &v) in rows.iter().zip(vals) {
+            y[i as usize] -= v * ys;
+        }
+    }
+    let mut x = vec![0.0; m];
+    for s in (0..m).rev() {
+        let (rows, vals) = t.u.col(Col::from_usize(s));
+        let k = rows.len() - 1;
+        let z = y[s] / vals[k];
+        x[t.col_perm.fwd[s] as usize] = z;
+        if is_exact_zero(z) {
+            continue;
+        }
+        for (&i, &v) in rows[..k].iter().zip(&vals[..k]) {
+            y[i as usize] -= v * z;
+        }
+    }
+    x
+}
+
+/// (T2), second half: the substitutions with the export give the dense
+/// FTRAN of the factor bit for bit.
+fn assert_export_solves_like_ftran(f: &mut LuF64, rng: &mut Rng) {
+    let t = f.triangular_factors().unwrap();
+    let opts = *f.options();
+    f.set_options(mode(opts, false));
+    for _ in 0..3 {
+        let rhs = rng.dense_ints(f.m());
+        let x = ftran_vec(f, &rhs);
+        let xe = ftran_by_export(&t, &rhs);
+        let same = x.iter().zip(&xe).all(|(a, b)| a.to_bits() == b.to_bits());
+        assert!(same, "dense FTRAN {x:?} vs export {xe:?}");
+    }
+    f.set_options(opts);
+}
+
+/// (T3): a clone that exported its factors solves exactly as one that did
+/// not, in both solve algorithms, through the alternation policy.
+fn assert_export_changes_nothing(f: &LuF64, rng: &mut Rng) {
+    let mut a = f.clone();
+    let mut b = f.clone();
+    let before = b.triangular_factors();
+    assert!(before.is_some());
+    let m = f.m();
+    for k in 0..6 {
+        let v = if k % 2 == 0 {
+            SparseVec::from_dense(&rng.dense_ints(m))
+        } else {
+            sparse_rhs(rng, m, 1 + m / 8)
+        };
+        let (mut va, mut vb) = (v.clone(), v);
+        if k % 3 == 2 {
+            a.btran(&mut va);
+            b.btran(&mut vb);
+        } else {
+            a.ftran(&mut va);
+            b.ftran(&mut vb);
+        }
+        let same = va
+            .values()
+            .iter()
+            .zip(vb.values())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
+        assert!(same, "solve {k} changed after the export");
+    }
+    assert_eq!(b.triangular_factors(), before);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases(96)))]
+
+    /// Issue #6, (T1)–(T3) on random sparse, dense, quasi-triangular, slack
+    /// and triangular bases, with both scales of the tolerances and both
+    /// bump orders: the export is the stored factor, `L U` reconstructs
+    /// `P B Q` within the bound of `export_ratio`, the substitutions with it
+    /// are the dense FTRAN bit for bit, and exporting changes nothing.
+    #[test]
+    fn triangular_factors_reconstruct_pbq(m in 1_usize..40, kind in 0_usize..5,
+                                          column in any::<bool>(), pre in any::<bool>(),
+                                          seed in any::<u64>()) {
+        let mut rng = Rng::new(seed);
+        let shape = if kind == 4 { TRIANGULAR } else { shape_of(kind) };
+        let (a, basis) = gen_basis(&mut rng, m, shape, 0);
+        let opts = if column { column_scaled(LuOptions::default()) } else { LuOptions::default() };
+        let mut f = LuF64::new(opts);
+        f.set_pre_order(pre.then_some(PreOrder::Colamd));
+        fz(&mut f, &basis, &a).unwrap();
+        let b = dense_basis(&basis, &a);
+        let r = export_ratio(&f, &b);
+        prop_assert!(r <= 1.0, "deviation / bound = {}", r);
+        assert_export_solves_like_ftran(&mut f, &mut rng);
+        assert_export_changes_nothing(&f, &mut rng);
+        // After a replay of the sequence (Algorithm R) the factor is fresh too.
+        f.refactorize_same_pattern(&(basis.as_slice(), &a)).unwrap();
+        let r = export_ratio(&f, &b);
+        prop_assert!(r <= 1.0, "replayed: deviation / bound = {}", r);
+    }
+}
+
+/// Issue #6 on the fixtures of the crate: the bump of Example 5.2, the
+/// slack basis of Example 5.1, the convection–diffusion grid with tiny
+/// columns of issue #2 (`TolScale::Column`, both bump orders), and a
+/// matrix whose elimination drops a partial value (`δ = 10⁻¹³ ≤ ε_drop`).
+#[test]
+fn triangular_factors_on_fixtures() {
+    let mut rng = Rng::new(6);
+    // Example 5.2.
+    let t = [
+        (0, 0, 4.0),
+        (1, 0, 1.0),
+        (0, 1, 1.0),
+        (1, 1, 4.0),
+        (2, 1, 1.0),
+        (1, 2, 1.0),
+        (2, 2, 4.0),
+    ];
+    let a = square(3, &t);
+    let mut f = LuF64::default();
+    f.factorize(&a).unwrap();
+    assert!(export_ratio(&f, &dense_of(&a)) <= 1.0);
+    assert_export_solves_like_ftran(&mut f, &mut rng);
+    // Example 5.1: L empty, U = diag(±1).
+    let basis: Vec<ColumnRef> = (0..6)
+        .map(|i| ColumnRef::Logical(Row::from_usize((i + 2) % 6), Sign::Minus))
+        .collect();
+    let z = CscMatrix::zeros(6, 0);
+    let f = factor_ok(&basis, &z);
+    let tf = f.triangular_factors().unwrap();
+    assert_eq!((tf.l.nnz(), tf.u.nnz(), tf.order()), (0, 6, 6));
+    assert!(tf.u.val.iter().all(|&v| approx_eq(v, -1.0, 0.0)));
+    // The grid with 40 % tiny columns, relative tolerances.
+    let k = 10;
+    let base = grid(k);
+    let n = k * k;
+    let mut beta = vec![0.0_f64; n];
+    for &(_, j, v) in &base {
+        beta[j] = beta[j].max(v.abs());
+    }
+    let tiny = |j: usize| j * 2_654_435_761 % 5 < 2;
+    let t: Vec<_> = base
+        .iter()
+        .map(|&(i, j, v)| (i, j, if tiny(j) { v * (1e-10 / beta[j]) } else { v }))
+        .collect();
+    let a = square(n, &t);
+    for pre in [None, Some(PreOrder::Colamd)] {
+        let mut f = LuF64::new(column_scaled(LuOptions::default()));
+        f.set_pre_order(pre);
+        f.factorize(&a).unwrap();
+        let r = export_ratio(&f, &dense_of(&a));
+        assert!(r <= 1.0, "{pre:?}: {r}");
+        assert_export_solves_like_ftran(&mut f, &mut rng);
+        assert_export_changes_nothing(&f, &mut rng);
+    }
+    // A dropped partial value: the pivot (0, 0) has the least Markowitz
+    // merit, and eliminating it leaves `0.5 + δ − 0.5 = δ` at (1, 1),
+    // below ε_drop = 10⁻¹².
+    let delta = 1e-13;
+    let t = [
+        (0, 0, 2.0),
+        (1, 0, 1.0),
+        (0, 1, 1.0),
+        (1, 1, 0.5 + delta),
+        (2, 1, 1.0),
+        (3, 1, 1.0),
+        (1, 2, 1.0),
+        (2, 2, 2.0),
+        (3, 2, 0.3),
+        (1, 3, 1.0),
+        (2, 3, 0.5),
+        (3, 3, 3.0),
+    ];
+    let a = square(4, &t);
+    let mut f = LuF64::default();
+    f.factorize(&a).unwrap();
+    let r = export_ratio(&f, &dense_of(&a));
+    // The dropped `δ` is the deviation, `δ / (4 ε_drop) = 0.025` of the
+    // bound: the drop term of (T2) is needed and suffices.
+    assert!(r <= 1.0 && r > 0.02, "with a drop: {r}");
+}
+
+/// Issue #6, step X1: `None` before any factorization, after a singular
+/// one and after a Forrest–Tomlin update; `Some` again after a fresh
+/// factorization; an update refused as singular leaves the factor — and
+/// its export — as it was.
+#[test]
+fn triangular_factors_only_for_a_fresh_factor() {
+    assert!(LuF64::default().triangular_factors().is_none());
+    let mut rng = Rng::new(66);
+    let m = 12;
+    let (a, mut basis) = gen_basis(&mut rng, m, SPARSE, m);
+    let mut f = LuF64::default();
+    // Singular: a duplicated column.
+    let mut dup = basis.clone();
+    dup[1] = dup[0];
+    assert!(fz(&mut f, &dup, &a).is_err());
+    assert!(f.triangular_factors().is_none());
+    fz(&mut f, &basis, &a).unwrap();
+    let fresh = f.triangular_factors().unwrap();
+    // A refused (singular) update: the factor is unchanged.
+    let b = dense_basis(&basis, &a);
+    let r = 3;
+    let mut v = rng.dense_ints(m);
+    v[r] = 0.0;
+    let aq: Vec<f64> = (0..m)
+        .map(|i| (0..m).map(|k| b[i][k] * v[k]).sum())
+        .collect();
+    let mut w = SparseVec::from_dense(&aq);
+    f.ftran_for_update(&mut w);
+    assert!(f.update(r, w.values()[r]).is_err());
+    assert_eq!(f.triangular_factors().as_ref(), Some(&fresh));
+    // An applied update.
+    let cand = ColumnRef::Structural(Col::from_usize(a.n_cols() - 1));
+    let (r, out) = exchange(&mut f, &mut rng, &a, cand);
+    assert_eq!(out.unwrap(), UpdateOutcome::Updated);
+    basis[r] = cand;
+    assert_eq!(f.update_stats().updates, 1);
+    assert!(f.triangular_factors().is_none());
+    // Refactorized: fresh again, and it is the factor of the new basis.
+    fz(&mut f, &basis, &a).unwrap();
+    assert!(export_ratio(&f, &dense_basis(&basis, &a)) <= 1.0);
+}
+
+/// (T1): `check_invariants` refuses the mutations a consumer could make by
+/// hand — a permutation that is not one, an entry of `L` on the diagonal,
+/// a missing diagonal of `U`, an order that does not match.
+#[test]
+fn triangular_factors_invariants_catch_mutations() {
+    let mut rng = Rng::new(7);
+    let (a, basis) = gen_basis(&mut rng, 15, DENSE, 0);
+    let f = factor_ok(&basis, &a);
+    let t = f.triangular_factors().unwrap();
+    assert_eq!(t.check_invariants(), Ok(()));
+    let mut bad = t.clone();
+    bad.row_perm.fwd.swap(0, 1); // inv no longer matches
+    assert!(bad.check_invariants().is_err());
+    let mut bad = t.clone();
+    // Column 0 of L gets an entry at row 0 (on the diagonal).
+    bad.l.row_idx.insert(0, 0);
+    bad.l.val.insert(0, 1.0);
+    for p in bad.l.col_ptr.iter_mut().skip(1) {
+        *p += 1;
+    }
+    assert!(bad.check_invariants().is_err());
+    let mut bad = t.clone();
+    // The diagonal of column 0 of U removed.
+    bad.u.row_idx.remove(0);
+    bad.u.val.remove(0);
+    for p in bad.u.col_ptr.iter_mut().skip(1) {
+        *p -= 1;
+    }
+    assert!(bad.check_invariants().is_err());
+    let mut bad = t;
+    bad.u.n_rows += 1;
+    assert!(bad.check_invariants().is_err());
+}
+
+// ---------------------------------------------------------------------------
 // Generators of KKT systems (Chapters 5.15 and 5.17).
 // ---------------------------------------------------------------------------
 
