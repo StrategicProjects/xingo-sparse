@@ -68,9 +68,10 @@
 //! is that of `B` (Sylvester; Chapter 5.14, step K4).
 //!
 //! ## Algorithm B′ (`FaerDense::sytrf`; task I08)
-//! faer 0.24.4's Bunch–Kaufman with partial pivoting
-//! (`linalg::cholesky::lblt::factor`, `lblt_unblocked` and
-//! `lblt_blocked_step`) states the second test of B3 as `|w_kk| ≥ α σ
+//! *faer's partial pivoting.* faer 0.24.4's Bunch–Kaufman with partial
+//! pivoting (`linalg::cholesky::lblt::factor`, `lblt_unblocked` and
+//! `lblt_blocked_step`, strategy `PivotingStrategy::Partial`; reported as
+//! sarah-quinones/faer-rs#288) states the second test of B3 as `|w_kk| ≥ α σ
 //! (σ/λ)` — `(alpha * gamma_r) * (gamma_r / gamma_i)` — where Bunch &
 //! Kaufman (and LAPACK `dsytf2`, `ABSAKK ≥ ALPHA·COLMAX·(COLMAX/ROWMAX)`)
 //! have `|w_kk| ≥ α λ (λ/σ)`, i.e. `|w_kk| σ ≥ α λ²`. Since `σ ≥ λ`, faer's
@@ -80,28 +81,58 @@
 //! bound `|e₁₁ e₂₂| < α² e₂₁²` the test exists to give: `det E` may be zero
 //! (`[1 2 0; 2 4 8; 0 8 0]`, nonsingular: `E = [1 2; 2 4]`, and faer's
 //! `1/(d₀₀ d₁₁ − 1)` is `1/0`, a NaN in `L`), or tiny, and the growth is
-//! unbounded (Algorithm M then sees a zero pivot or a huge `L₂₁`). The
-//! adapter therefore checks faer's output against the test faer skipped:
-//! B′1. Copy the lower triangle of `A`; run faer's partial-pivoting `LBLᵀ`.
+//! unbounded (Algorithm M then sees a zero pivot or a huge `L₂₁`). Until
+//! 0.5.x this kernel asked faer for `Partial`, with no recorded reason
+//! (Algorithm M does not depend on it: it needs only that a column with no
+//! off-diagonal entry be a `1×1` pivot without elimination, which every
+//! strategy of faer does).
+//!
+//! *Rook pivoting.* This kernel asks faer for `PivotingStrategy::Rook`,
+//! whose tests are right: a `2×2` pivot is taken only on two columns `i₀,
+//! i₁` each of which holds the largest off-diagonal entry of the other
+//! (`γ = λ = σ = |e₂₁|`) with `|e₁₁|, |e₂₂| < α γ`, so `|e₁₁ e₂₂| < α² λ²`
+//! and `|det E| > (1 − α²) λ²`; a `1×1` pivot `d` has `|d| ≥ α γ` (Ashcraft,
+//! Grimes & Lewis 1998). Its pivots are not those of [`NaiveDense`]'s
+//! partial pivoting (Algorithm B); both satisfy (D2).
+//!
+//! The check of Algorithm B′ stays, as a net:
+//! B′1. Copy the lower triangle of `A`; run faer's rook-pivoting `LBLᵀ`.
 //! B′2. For each `2×2` block `E` at `k` faer returned, with `λ = |e₂₁|` and
 //!      `σ = max(λ, max_{i≥k+2} |w_{i,k+1}|)`, where `w_{i,k+1} = l_ik e₂₁ +
 //!      l_i,k+1 e₂₂` recovers column `k + 1` of the working matrix at the
-//!      step (`[l_ik l_i,k+1] = [w_ik w_i,k+1] E⁻¹`, step B5; after faer's
-//!      swap, column `k + 1` is column `r`, whose largest off-diagonal entry
-//!      is `σ`): accept iff `E`, the `l`s and `σ` are finite and `|e₁₁| σ <
-//!      α λ²` — B3's condition for this `2×2` pivot.
-//! B′3. If every block is accepted, return faer's factor (unchanged: its bits
-//!      are those of 0.5.x); else restore the copy and run Algorithm B
-//!      ([`NaiveDense`]'s `sytrf`) on it.
-//! Only the `2×2` blocks need the check: the other departure (`1×1` at `r`
-//! instead of at `k`) has `|d| ≥ α σ`, which bounds `L` by `1/α`. A block
-//! that passes B′2 has `|e₁₁ e₂₂| < α λ²/σ · α σ = α² λ²`, so `|det E| > (1
-//! − α²) λ²`, as in Bunch–Kaufman. `σ` in B′2 is recomputed and carries
-//! rounding: a block on the edge of the test may be refused where faer's
-//! exact `σ` would pass it (then Algorithm B runs: a different but equally
-//! valid factor), never a block far from it — a block whose `E` is singular
-//! or nearly so has `|e₁₁| ≥ α λ²/|e₂₂| > λ²/σ`, and the recovered `σ`
-//! errs by `O(u |L| |E|)`, the backward error of the step.
+//!      step (`[l_ik l_i,k+1] = [w_ik w_i,k+1] E⁻¹`, step B5): accept iff
+//!      `E`, the `l`s and `σ` are finite and `|e₁₁| σ < α λ²` — B3's
+//!      condition for a `2×2` pivot, which a rook `2×2` pivot meets (`σ = λ`,
+//!      `|e₁₁| < α λ`) up to the rounding of the recovered `σ`.
+//! B′3. If every block is accepted, return faer's factor; else restore the
+//!      copy and run Algorithm B ([`NaiveDense`]'s `sytrf`) on it.
+//! A block that passes B′2 has `|e₁₁ e₂₂| < α λ²/σ · α σ = α² λ²`, so
+//! `|det E| > (1 − α²) λ²`, as in Bunch–Kaufman. `σ` in B′2 is recomputed
+//! and carries rounding: a block on the edge of the test may be refused
+//! (then Algorithm B runs: a different but equally valid factor), never a
+//! block far from it. Algorithm B has no blocking (`O(n³)` in plain loops):
+//! when B′3 runs on a large front it costs far more than faer's kernel —
+//! which is why the strategy, not the net, is the fix.
+//!
+//! *Measured (task I08).* Algorithm M (`Indefinite`, `Regularization::none()`)
+//! on 3 005 random `L₀ Δ₀ L₀ᵀ` (exact integers, order ≤ 27) × the three
+//! option sets of the tests: 9 015 factorizations — refused, factors with
+//! another inertia, and factors that differ in any bit from 0.5.x's among
+//! its 8 960 successes; and the median of three numeric factorizations of
+//! random augmented `[−D Aᵀ; A 0]` with large fronts (order `10⁴`, front
+//! 1 898; `6·10⁴`, front 3 587; `1.5·10⁵`, front 1 439, one run), release
+//! build, one session:
+//!
+//! | `sytrf` | refused | wrong inertia | bits changed | `10⁴` | `6·10⁴` | `1.5·10⁵` |
+//! |---|---|---|---|---|---|---|
+//! | faer `Partial` (0.5.x) | 55 | 0 | — | 0.12 s | refused | 22.7 s |
+//! | faer `Partial` + B′ | 0 | 0 | 1 131 | 1.05 s | 13.4 s | 22.2 s |
+//! | faer `Rook` + B′ (this kernel) | 0 | 0 | 2 203 | 0.12 s | 4.2 s | 22.7 s |
+//!
+//! With `Partial`, B′3 ran on 302 blocks of the 9 303 of the small
+//! matrices (default options) and on 31 blocks of more than 64 columns of
+//! the large ones, up to 1 898 columns — the cost in the second row. With
+//! `Rook` it ran on none.
 //!
 //! ## Algorithms T, G, S (`trsm_lower`, `gemm_sub`, `syrk_sub`)
 //! `trsm_lower(L, B, false)`: `B ← L⁻¹ B` by forward substitution, column
@@ -179,8 +210,10 @@
 //! 10–11; LAPACK `dpotrf`/`dsytrf`/`dtrsm`/`dgemm`/`dsyrk` (interfaces,
 //! read); faer 0.24.4 `linalg::{cholesky, triangular_solve, matmul}` (the
 //! API, read, not copied) and `linalg::cholesky::bunch_kaufman::factor`
-//! (the pivot tests of `lblt_unblocked` and `lblt_blocked_step`, read for
-//! Algorithm B′).
+//! (the pivot tests of `lblt_unblocked` and `lblt_blocked_step`, partial
+//! and rook, read for Algorithm B′); Ashcraft, Grimes & Lewis, "Accurate
+//! symmetric indefinite linear equation solvers", SIAM J. Matrix Anal.
+//! Appl. 20(2), 1998 (rook pivoting).
 
 use crate::kkt::count_inertia;
 use crate::real::{Real, is_exact_zero, le, lt};
@@ -674,13 +707,12 @@ fn block_inertia<T: Real>(a: &DenseBlock<T>, pivot_2x2: &[bool]) -> Inertia {
 }
 
 /// faer's dense kernels (`f64` only in v0.1; extended types use
-/// [`NaiveDense`]). `sytrf` uses faer's Bunch–Kaufman with partial
-/// pivoting, whose pivot choices may differ from [`NaiveDense`]'s in ties:
-/// both satisfy (D2). faer 0.24.4's partial pivoting (the strategy this
-/// kernel asks for) states one of Bunch–Kaufman's tests with `λ` and `σ`
-/// exchanged and may return a `2×2` pivot that is singular;
-/// such a factor is refused and the block refactorized by [`NaiveDense`]
-/// (Algorithm B′ of Chapter 5.16).
+/// [`NaiveDense`]). `sytrf` uses faer's Bunch–Kaufman with rook pivoting,
+/// whose pivots differ from [`NaiveDense`]'s partial pivoting: both satisfy
+/// (D2). A factor whose `2×2` pivots fail Bunch–Kaufman's test is refused
+/// and the block refactorized by [`NaiveDense`] (Algorithm B′ of Chapter
+/// 5.16; faer's *partial* pivoting, which this kernel used until 0.5.x,
+/// can return a singular `2×2` pivot).
 #[cfg(feature = "faer")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FaerDense;
@@ -741,17 +773,19 @@ pub(crate) mod faer_impl {
         MatMut::from_column_major_slice_mut(&mut a.data, a.rows, a.cols)
     }
 
-    /// faer's partial-pivoting `LBLᵀ` in place, in the layout of
-    /// [`DenseKernel::sytrf`] (`e₂₁` written at `(k + 1, k)`, the marks in
-    /// `pivot_2x2`); returns the permutation's `fwd`. Step B′1 of Algorithm
-    /// B′ without the check of B′2 — the kernel of 0.5.x.
-    pub(crate) fn faer_partial_lblt(
+    /// faer's `LBLᵀ` with the given pivoting `strategy`, in place, in the
+    /// layout of [`DenseKernel::sytrf`] (`e₂₁` written at `(k + 1, k)`, the
+    /// marks in `pivot_2x2`); returns the permutation's `fwd`. Step B′1 of
+    /// Algorithm B′ (with [`PivotingStrategy::Rook`]) without the check of
+    /// B′2; with [`PivotingStrategy::Partial`], the kernel of 0.5.x.
+    pub(crate) fn faer_lblt(
         a: &mut DenseBlock<f64>,
         pivot_2x2: &mut Vec<bool>,
+        strategy: PivotingStrategy,
     ) -> Result<Vec<usize>, DenseError> {
         let n = a.square()?;
         let mut params: Spec<LbltParams, f64> = Spec::default();
-        params.config.pivoting = PivotingStrategy::Partial;
+        params.config.pivoting = strategy;
         let mut subdiag = vec![0.0_f64; n];
         let mut fwd = vec![0_usize; n];
         let mut inv = vec![0_usize; n];
@@ -787,6 +821,28 @@ pub(crate) mod faer_impl {
         Ok(fwd)
     }
 
+    /// Algorithm B′ with faer's pivoting `strategy`: [`FaerDense::sytrf`]
+    /// with [`PivotingStrategy::Rook`].
+    pub(crate) fn faer_sytrf_checked(
+        a: &mut DenseBlock<f64>,
+        perm: &mut Perm,
+        pivot_2x2: &mut Vec<bool>,
+        strategy: PivotingStrategy,
+    ) -> Result<Inertia, DenseError> {
+        a.square()?;
+        // B′1.
+        let copy = a.data.clone();
+        let fwd = faer_lblt(a, pivot_2x2, strategy)?;
+        // B′2, B′3.
+        if !bunch_kaufman_2x2_holds(a, pivot_2x2) {
+            a.data.copy_from_slice(&copy);
+            return NaiveDense.sytrf(a, perm, pivot_2x2);
+        }
+        *perm = Perm::from_fwd(fwd.into_iter().map(crate::perm::idx32).collect())
+            .map_err(|_| DenseError::Dimension)?;
+        Ok(block_inertia(a, pivot_2x2))
+    }
+
     impl DenseKernel<f64> for FaerDense {
         fn potrf(&self, a: &mut DenseBlock<f64>) -> Result<(), DenseError> {
             let n = a.square()?;
@@ -819,18 +875,7 @@ pub(crate) mod faer_impl {
             perm: &mut Perm,
             pivot_2x2: &mut Vec<bool>,
         ) -> Result<Inertia, DenseError> {
-            a.square()?;
-            // B′1.
-            let copy = a.data.clone();
-            let fwd = faer_partial_lblt(a, pivot_2x2)?;
-            // B′2, B′3.
-            if !bunch_kaufman_2x2_holds(a, pivot_2x2) {
-                a.data.copy_from_slice(&copy);
-                return NaiveDense.sytrf(a, perm, pivot_2x2);
-            }
-            *perm = Perm::from_fwd(fwd.into_iter().map(crate::perm::idx32).collect())
-                .map_err(|_| DenseError::Dimension)?;
-            Ok(block_inertia(a, pivot_2x2))
+            faer_sytrf_checked(a, perm, pivot_2x2, PivotingStrategy::Rook)
         }
 
         fn trsm_lower(&self, l: &DenseBlock<f64>, b: &mut DenseBlock<f64>, transpose: bool) {
@@ -1116,15 +1161,19 @@ mod tests {
     }
 
     /// Algorithm B′ on the smallest block faer 0.24.4's partial pivoting
-    /// takes a singular pivot on
-    /// (task I08): `[1 2 0; 2 4 8; 0 8 0]` (det `−64`). Bunch–Kaufman takes
-    /// the `1×1` pivot `1` (`|w₀₀| σ = 8 ≥ α λ² = 2.56`); faer, with `λ` and
-    /// `σ` exchanged (`1 < α σ²/λ = 20.5`), takes `E = [1 2; 2 4]`, which is
-    /// singular, and its factor holds non-finite values. `FaerDense` refuses
-    /// it (B′2) and returns Algorithm B's factor bit for bit (B′3).
+    /// takes a singular pivot on (task I08; faer-rs#288): `[1 2 0; 2 4 8; 0
+    /// 8 0]` (det `−64`). Bunch–Kaufman takes the `1×1` pivot `1` (`|w₀₀| σ
+    /// = 8 ≥ α λ² = 2.56`); faer's `Partial`, with `λ` and `σ` exchanged (`1
+    /// < α σ²/λ = 20.5`), takes `E = [1 2; 2 4]`, which is singular, and its
+    /// factor holds non-finite values — the sentinel of the faer defect:
+    /// when faer is fixed, the first assertions fail. Algorithm B′ with
+    /// `Partial` refuses it (B′2) and returns Algorithm B's factor bit for
+    /// bit (B′3). `FaerDense` (rook) takes the `2×2` pivot `[4 8; 8 0]` on
+    /// rows 1 and 2, which B′2 accepts.
     #[cfg(feature = "faer")]
     #[test]
     fn faer_dense_refuses_faers_singular_2x2_pivot() {
+        use faer::linalg::cholesky::lblt::factor::PivotingStrategy;
         let a0 = DenseBlock {
             rows: 3,
             cols: 3,
@@ -1133,7 +1182,7 @@ mod tests {
         // faer alone (the kernel of 0.5.x): the singular 2×2 pivot.
         let mut raw = a0.clone();
         let mut two = Vec::new();
-        let fwd = faer_impl::faer_partial_lblt(&mut raw, &mut two).unwrap();
+        let fwd = faer_impl::faer_lblt(&mut raw, &mut two, PivotingStrategy::Partial).unwrap();
         assert_eq!(fwd, vec![0, 1, 2]);
         assert_eq!(two, vec![true, true, false]);
         assert_eq!(
@@ -1142,11 +1191,12 @@ mod tests {
         );
         assert!(raw.data.iter().any(|x| !x.is_finite()));
         assert!(!faer_impl::bunch_kaufman_2x2_holds(&raw, &two));
-        // FaerDense: Algorithm B's factor, bit for bit.
+        // Algorithm B′ with Partial: Algorithm B's factor, bit for bit.
         let (mut f, mut g) = (a0.clone(), a0.clone());
         let (mut p, mut q) = (Perm::identity(0), Perm::identity(0));
         let (mut tf, mut tg) = (Vec::new(), Vec::new());
-        let sf = FaerDense.sytrf(&mut f, &mut p, &mut tf).unwrap();
+        let sf = faer_impl::faer_sytrf_checked(&mut f, &mut p, &mut tf, PivotingStrategy::Partial)
+            .unwrap();
         let sg = NaiveDense.sytrf(&mut g, &mut q, &mut tg).unwrap();
         assert_eq!(
             sf,
@@ -1162,6 +1212,18 @@ mod tests {
         // (D3): the strict upper triangle (the 9s) is untouched.
         assert_eq!((f.get(0, 1), f.get(0, 2), f.get(1, 2)), (9.0, 9.0, 9.0));
         assert!(sytrf_error(&a0, &f, &p, &tf) <= 1e-12);
+        // FaerDense (rook): faer's factor, accepted by B′2.
+        let mut h = a0.clone();
+        let mut th = Vec::new();
+        let sh = FaerDense.sytrf(&mut h, &mut p, &mut th).unwrap();
+        assert_eq!(sh, sf);
+        assert_eq!(p.fwd, vec![1, 2, 0]);
+        assert_eq!(th, vec![true, true, false]);
+        assert_eq!((h.get(0, 0), h.get(1, 0), h.get(1, 1)), (4.0, 8.0, 0.0));
+        assert!(faer_impl::bunch_kaufman_2x2_holds(&h, &th));
+        assert!(h.data.iter().all(|x| x.is_finite()));
+        assert_eq!((h.get(0, 1), h.get(0, 2), h.get(1, 2)), (9.0, 9.0, 9.0));
+        assert!(sytrf_error(&a0, &h, &p, &th) <= 1e-12);
         // A 2×2 pivot that Bunch–Kaufman takes is kept: [0 1; 1 0].
         let mut b = DenseBlock {
             rows: 2,
@@ -1169,7 +1231,7 @@ mod tests {
             data: vec![0.0, 1.0, 0.0, 0.0],
         };
         let mut t = Vec::new();
-        faer_impl::faer_partial_lblt(&mut b.clone(), &mut t).unwrap();
+        faer_impl::faer_lblt(&mut b.clone(), &mut t, PivotingStrategy::Partial).unwrap();
         FaerDense.sytrf(&mut b, &mut p, &mut t).unwrap();
         assert_eq!(t, vec![true, true]);
         assert!(faer_impl::bunch_kaufman_2x2_holds(&b, &t));
