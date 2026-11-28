@@ -5,6 +5,19 @@ All notable changes to `xingo-sparse` are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/); before 1.0, a minor
 version may change the public API.
 
+## [Unreleased]
+
+### Performance
+
+* `Amd` on a structurally symmetric pattern (the `L₀ + L₀ᵀ` that
+  `SupernodalLdl` and `FaerLdl` hand it) copies the off-diagonal entries
+  instead of merging `S` with `Sᵀ` (step A1′ of Chapter 5.10; issue
+  [#4](https://github.com/StrategicProjects/xingo-sparse/issues/4)). The
+  permutations are the same, bit for bit (every AMD, SYMAMD and COLAMD
+  ordering of the 93 Netlib and 14 Kennington LPs compared). On the twenty
+  KKT patterns of the ten largest Netlib LPs: 0.93× the time (geometric
+  mean; 0.67–1.00), 1.16× faer's AMD instead of 1.25× (Apple M2 Pro).
+
 ## [0.6.0] — 2026-11-27
 
 A symmetric indefinite form whose inertia is reported instead of checked,

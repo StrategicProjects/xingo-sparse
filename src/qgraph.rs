@@ -168,7 +168,14 @@
 //! on maros-r7's augmented system, with the same number of entries as
 //! faer's port), of which the bounds checks of the random accesses are
 //! about 11 % (measured once with unchecked indexing, not kept: the crate
-//! has no `unsafe`).
+//! has no `unsafe`). Task T09 (sparse#4) remeasured with its own harness
+//! (faer's `amd::order` with its scratch allocation; medians of 11 calls,
+//! 6 interleaved runs): 1.25× before and 1.16× after step A1′ of Chapter
+//! 5.10, which saves the merge of `S + Sᵀ` on symmetric input; the steps
+//! here were then Q5 37 %, Q4 22 %, Q3 6 %, Q7 5 % of the ordering. Every
+//! count of this graph (`len`, `elen`, `nv`, `deg`, `vw`, `hof`) was also
+//! tried in `u32`, as faer's port uses 32-bit indices: no change (1.008×,
+//! noise), so they stay `usize`.
 //!
 //! ## References
 //! Amestoy, Davis & Duff, "An approximate minimum degree ordering

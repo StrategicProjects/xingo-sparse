@@ -42,7 +42,21 @@
 //! ## Algorithm A (AMD)
 //! A1. [Graph.] `G ← S + Sᵀ` without its diagonal (Algorithm S of Chapter
 //!     5.9; for `Columns`, the graph of `SᵀS` by Algorithm G). An error
-//!     unless `S` is square for `Symmetric`.
+//!     unless `S` is square for `Symmetric`. Step A1′ below avoids the merge
+//!     when it is not needed; the lists are the same either way (sorted,
+//!     the diagonal dropped).
+//! A1′. [Already symmetric?] Form `T = Sᵀ` (Algorithm T of Chapter 5.8)
+//!     and compare its arrays with those of `S`. If they are equal, `S + Sᵀ
+//!     = S` and `G` is `S` without its diagonal, copied column by column;
+//!     otherwise merge the columns of `S` and `T`. The KKT solvers pass
+//!     `L₀ + L₀ᵀ` (step A2 of the analyses of `SupernodalLdl` and
+//!     `FaerLdl`), so their patterns always take the copy. *Measured (task T09, sparse#4):* on the twenty KKT
+//!     patterns of the ten largest Netlib LPs the ordering takes 0.93× the
+//!     time with the copy (geometric mean of medians, 6 interleaved runs;
+//!     0.67–1.00), with the same permutations bit for bit; testing symmetry without `T`, by a cursor per column,
+//!     was tried and rejected: its reads jump across the whole pattern and
+//!     made the densest case (fit2p's normal equations, 9 M entries) 1.3×
+//!     slower, where the transpose only scatters writes.
 //! A2. [Dense rows.] With `δ = κ(dense, n)` (`dense` default 10), every
 //!     node of degree `> δ` is excluded: ordering it in the middle would
 //!     cost as much as it fills, and its presence would spoil every
@@ -214,9 +228,25 @@ fn adjacency(g: &Pattern) -> Lists {
 
 /// The off-diagonal adjacency of `S + Sᵀ` for a square `S` (Algorithm S of
 /// Chapter 5.9 straight into the lists the engine takes: one transpose
-/// and one merge per column, no intermediate pattern).
+/// and one merge per column, no intermediate pattern), or, when `Sᵀ = S`
+/// (step A1′), the off-diagonal entries of `S` without the merge.
 fn sym_adjacency(s: &Pattern) -> Lists {
     let t = s.transpose();
+    if t.row_idx == s.row_idx && t.col_ptr == s.col_ptr {
+        adjacency(s)
+    } else {
+        merge_adjacency(s, &t)
+    }
+}
+
+/// Algorithm S into lists: one transpose and one merge per column.
+#[cfg(test)]
+fn merged_adjacency(s: &Pattern) -> Lists {
+    merge_adjacency(s, &s.transpose())
+}
+
+/// The merge of Algorithm S, column by column, of `S` and `T = Sᵀ`.
+fn merge_adjacency(s: &Pattern, t: &Pattern) -> Lists {
     let n = s.n_cols();
     let mut ptr = Vec::with_capacity(n + 1);
     let mut out = Vec::with_capacity(2 * s.nnz());
@@ -470,6 +500,60 @@ mod tests {
     /// A random tree on `n` nodes.
     fn tree_edges(rng: &mut Rng, n: usize) -> Vec<(usize, usize)> {
         (1..n).map(|i| (i, rng.below(i))).collect()
+    }
+
+    /// Step A1′: the lists of the copy equal those of the merge, on random
+    /// patterns of every kind (symmetric with and without a full diagonal,
+    /// one entry moved to another row of its column — the counts per
+    /// column unchanged —, a triangle, a general one, the empty one).
+    #[test]
+    fn symmetric_shortcut_gives_the_merged_lists() {
+        let mut rng = Rng::new(0x7090_2026);
+        let mut symmetric = 0;
+        for case in 0..400 {
+            let n = 1 + rng.below(40);
+            let m = rng.below(4 * n);
+            let mut e = Vec::new();
+            for _ in 0..m {
+                let (i, j) = (rng.below(n), rng.below(n));
+                match case % 4 {
+                    0 | 1 => {
+                        e.push((i, j));
+                        e.push((j, i));
+                    }
+                    2 => e.push((i.max(j), i.min(j))),
+                    _ => e.push((i, j)),
+                }
+            }
+            if case % 4 == 1 {
+                e.extend((0..n).map(|i| (i, i)));
+            }
+            let mut s = pat(n, n, &e);
+            if case % 8 == 0 && n > 2 && s.nnz() > 0 {
+                // Move one entry to another row of its column (same
+                // counts per column, no longer symmetric unless by luck).
+                let k = rng.below(s.nnz());
+                let j = (0..n).find(|&j| s.col_ptr[j + 1] > k).unwrap();
+                let mut col: Vec<u32> = s.col(j).to_vec();
+                let fresh = (0..n).map(idx32).find(|r| !col.contains(r));
+                if let Some(r) = fresh {
+                    col[k - s.col_ptr[j]] = r;
+                    col.sort_unstable();
+                    let mut row_idx = s.row_idx.clone();
+                    row_idx[s.col_ptr[j]..s.col_ptr[j + 1]].copy_from_slice(&col);
+                    s = Pattern::from_raw_parts(n, s.col_ptr.clone(), row_idx).unwrap();
+                }
+            }
+            let t = s.transpose();
+            if t.col_ptr == s.col_ptr && t.row_idx == s.row_idx {
+                symmetric += 1;
+            }
+            assert_eq!(sym_adjacency(&s), merged_adjacency(&s), "case {case}");
+        }
+        // Both branches of A1′ were taken.
+        assert!(symmetric > 100 && symmetric < 350, "{symmetric}");
+        let empty = pat(3, 3, &[]);
+        assert_eq!(sym_adjacency(&empty), merged_adjacency(&empty));
     }
 
     /// The `k × k` grid graph in its natural (row-major) numbering.

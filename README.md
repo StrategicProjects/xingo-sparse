@@ -209,8 +209,14 @@ ones that can be closed have an issue.
    diagonals): residual against the unregularized `K` at most `10⁻¹⁰` with
    the default refinement in all but one case (that one at `1.6·10⁻¹⁰`). A
    running interior-point method will review `ρ, δ`.
-3. Our `Amd` takes about 1.15× the time of faer's AMD (geometric mean on the
-   ten largest Netlib systems), with the same fill ([#4](https://github.com/StrategicProjects/xingo-sparse/issues/4)). Against METIS's nested
+3. Our `Amd` takes about 1.16× the time of faer's AMD (geometric mean on the
+   twenty KKT patterns of the ten largest Netlib LPs, 1.25× before the
+   symmetric-input shortcut of the unreleased version), with the same fill
+   ([#4](https://github.com/StrategicProjects/xingo-sparse/issues/4)): the
+   scans of the quotient graph visit as many entries as faer's, and the
+   largest known part of what is left is the bounds checks of their
+   random accesses (about 11 % of the time when measured once, in an
+   earlier version), which this crate keeps: it has no `unsafe`. Against METIS's nested
    dissection (`ndmetis` 5.1.0, external tool) its fill is 0.97× on
    average over 40 KKT systems (ten largest Netlib, five Kennington, five
    MIPLIB 2017 root LPs, normal and augmented), from 0.43× to
